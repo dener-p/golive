@@ -23,6 +23,7 @@
         "@golive/auth": "workspace:*",
         "@golive/db": "workspace:*",
         "better-auth": "catalog:",
+        "drizzle-orm": "^0.45.2",
         "hono": "^4.13.7",
         "libsql": "catalog:",
         "varlock": "catalog:",
