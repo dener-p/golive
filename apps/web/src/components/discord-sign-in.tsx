@@ -2,19 +2,21 @@ import { Button } from "@golive/ui/components/button";
 import { useState } from "react";
 
 import { authClient } from "@/lib/auth-client";
+import {ENV}from "../env";
 
 import Loader from "./loader";
 
-export default function DiscordSignIn() {
+export default function DiscordSignIn({ next }: { next?: string }) {
   const { isPending } = authClient.useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  console.log({env:ENV.VITE_CALLBACK_URL})
   const handleSignIn = async () => {
     setIsSubmitting(true);
     await authClient.signIn.social(
       {
         provider: "discord",
-        callbackURL: "/dashboard",
+        callbackURL: ENV.VITE_CALLBACK_URL,
       },
       {
         onError: () => setIsSubmitting(false),

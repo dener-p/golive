@@ -9,7 +9,9 @@
     "serve": "vite preview",
     "start": "vite",
     "check-types": "vite build && tsc --noEmit",
-    "env:generate": "varlock codegen"
+    "env:generate": "varlock codegen",
+  "deploy": "bun run build && wrangler deploy"
+  "preview": "bun run build && wrangler dev"
   },
   "dependencies": {
     "@golive/ui": "workspace:*",

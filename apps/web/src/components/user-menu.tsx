@@ -23,7 +23,7 @@ export default function UserMenu() {
 
   if (!session) {
     return (
-      <Link to="/login">
+      <Link to="/login" search={{ next: "/live" }}>
         <Button variant="outline">Sign In</Button>
       </Link>
     );

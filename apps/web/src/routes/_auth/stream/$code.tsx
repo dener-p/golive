@@ -1,0 +1,238 @@
+import { Button } from "@golive/ui/components/button";
+import { createFileRoute } from "@tanstack/react-router";
+import { Check, Copy, Loader2, MonitorPlay, Radio, Users } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { startBroadcast, type BroadcastHandle } from "@/lib/broadcast";
+import { getTransmission, type TransmissionInfo } from "@/lib/transmissions";
+
+export const Route = createFileRoute("/_auth/stream/$code")({
+  component: RouteComponent,
+});
+
+function RouteComponent() {
+  const { code } = Route.useParams();
+  const { session } = Route.useRouteContext();
+  const previewRef = useRef<HTMLVideoElement | null>(null);
+  const broadcastRef = useRef<BroadcastHandle | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const [info, setInfo] = useState<TransmissionInfo | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLive, setIsLive] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [viewerCount, setViewerCount] = useState(0);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    getTransmission(code)
+      .then(setInfo)
+      .catch((error: Error) => {
+        setLoadError(error.message === "NotFound" ? "Room not found" : "Could not load this room");
+      });
+  }, [code]);
+
+  const stopLive = useCallback(() => {
+    broadcastRef.current?.stop();
+    broadcastRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (previewRef.current) {
+      previewRef.current.srcObject = null;
+    }
+    setViewerCount(0);
+    setIsLive(false);
+    setIsStarting(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      broadcastRef.current?.stop();
+      broadcastRef.current = null;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const goLive = async () => {
+    setLiveError(null);
+    setIsStarting(true);
+    try {
+      const media = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 60, max: 60 },
+        },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+
+      streamRef.current = media;
+      if (previewRef.current) {
+        previewRef.current.srcObject = media;
+        previewRef.current.play().catch(() => {});
+      }
+
+      broadcastRef.current = startBroadcast({
+        code,
+        stream: media,
+        onViewerCount: setViewerCount,
+        onError: setLiveError,
+      });
+      setIsLive(true);
+      setIsStarting(false);
+
+      media.getVideoTracks()[0]?.addEventListener("ended", stopLive, { once: true });
+    } catch (error) {
+      setIsStarting(false);
+      setLiveError(
+        error instanceof DOMException && error.name === "NotAllowedError"
+          ? "Screen sharing was cancelled"
+          : error instanceof Error
+            ? error.message
+            : "Could not start screen sharing",
+      );
+    }
+  };
+
+  const copyLink = useCallback(async () => {
+    await navigator.clipboard.writeText(`${window.location.origin}/watch/${code}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [code]);
+
+  if (loadError) {
+    return (
+      <div className="container mx-auto max-w-3xl px-6 py-10 text-center">
+        <h1 className="text-xl font-bold">{loadError}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Check the room code you were given and try again.
+        </p>
+      </div>
+    );
+  }
+
+  if (info && session.data?.user.id !== info.hostUserId) {
+    return (
+      <div className="container mx-auto max-w-3xl px-6 py-10 text-center">
+        <h1 className="text-xl font-bold">You're not the host of this room</h1>
+        <Button render={<a href={`/watch/${code}`} />} nativeButton={false} className="mt-4">
+          Watch it instead
+        </Button>
+      </div>
+    );
+  }
+
+  const watchUrl = `${window.location.origin}/watch/${code}`;
+
+  return (
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-6 md:px-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight md:text-2xl">
+            {info?.title ?? "Transmission"}
+          </h1>
+          <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+            <span className="font-mono">#{code}</span>
+            <span aria-hidden>·</span>
+            <span>Broadcast studio</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isLive && (
+            <span className="inline-flex h-7 items-center gap-1.5 border border-destructive/40 bg-destructive/15 px-2.5 text-xs font-semibold text-destructive">
+              <Radio className="size-3.5 animate-pulse" />
+              LIVE · {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
+            </span>
+          )}
+          <Button variant="outline" onClick={copyLink}>
+            {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+            {copied ? "Copied" : "Copy link"}
+          </Button>
+          {isLive ? (
+            <Button variant="destructive" onClick={stopLive}>
+              End stream
+            </Button>
+          ) : (
+            <Button onClick={goLive} disabled={isStarting}>
+              {isStarting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Radio className="size-4" />
+              )}
+              {isStarting ? "Waiting for picker…" : "Go Live"}
+            </Button>
+          )}
+        </div>
+      </header>
+
+      {liveError && (
+        <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-sm text-destructive">
+          {liveError}
+        </p>
+      )}
+
+      <div className="relative aspect-video w-full bg-black ring-1 ring-foreground/10">
+        <video ref={previewRef} muted playsInline className="size-full object-contain" />
+
+        {!isLive && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/95 p-6 text-center">
+            <div className="flex size-12 items-center justify-center rounded-full border border-foreground/15 bg-muted/40">
+              <MonitorPlay className="size-5" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">Ready when you are</p>
+              <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
+                Hit Go Live, pick a screen or window, and up to{" "}
+                <strong className="text-foreground">1080p / 60fps</strong> video will be sent to
+                everyone in this room.
+              </p>
+            </div>
+            <Button onClick={goLive} disabled={isStarting} className="gap-2">
+              {isStarting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Radio className="size-4" />
+              )}
+              {isStarting ? "Waiting for picker…" : "Go Live"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Share <span className="font-mono">{watchUrl}</span>
+            </p>
+          </div>
+        )}
+
+        {isLive && (
+          <>
+            <span className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 border border-destructive/40 bg-destructive/20 px-2 py-0.5 text-xs font-semibold text-destructive backdrop-blur">
+              <Radio className="size-3.5 animate-pulse" />
+              LIVE
+            </span>
+            <span className="pointer-events-none absolute bottom-3 left-3 inline-flex items-center gap-1.5 px-2 py-0.5 text-xs text-foreground/80 backdrop-blur">
+              <Users className="size-3.5" />
+              {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
+            </span>
+          </>
+        )}
+      </div>
+
+      <footer className="text-sm text-muted-foreground">
+        {isLive ? (
+          <p>
+            You're broadcasting to everyone in room <span className="font-mono">#{code}</span>.
+            Ending the stream (or closing the share picker) stops it for all viewers.
+          </p>
+        ) : (
+          <p>
+            The room is ready. Viewers who open your link will wait here and your stream will play
+            automatically the moment you go live.
+          </p>
+        )}
+      </footer>
+    </div>
+  );
+}
