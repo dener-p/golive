@@ -1,0 +1,3 @@
+{
+  "extends": "@golive/config/tsconfig.base.json"
+}
