@@ -44,6 +44,8 @@
     "CI",
     "CORS_ORIGIN",
     "DATABASE_URL",
+    "DISCORD_CLIENT_ID",
+    "DISCORD_CLIENT_SECRET",
     "NODE_ENV",
     "VERCEL",
     "VERCEL_ENV",

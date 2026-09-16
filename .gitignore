@@ -3,6 +3,9 @@ node_modules
 .pnp
 .pnp.js
 
+# AI stuff
+project.md
+
 # Build outputs
 dist
 build

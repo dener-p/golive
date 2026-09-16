@@ -32,13 +32,16 @@ export default function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger render={<Button variant="outline" />}>
+        {session.user.image ? (
+          <img src={session.user.image} alt={session.user.name} className="size-4 rounded-full" />
+        ) : null}
         {session.user.name}
       </DropdownMenuTrigger>
       <DropdownMenuContent className="bg-card">
         <DropdownMenuGroup>
           <DropdownMenuLabel>My Account</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem>{session.user.email}</DropdownMenuItem>
+          {session.user.email ? <DropdownMenuItem>{session.user.email}</DropdownMenuItem> : null}
           <DropdownMenuItem
             variant="destructive"
             onClick={() => {
