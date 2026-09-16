@@ -10,7 +10,7 @@
     "start": "vite",
     "check-types": "vite build && tsc --noEmit",
     "env:generate": "varlock codegen",
-  "deploy": "bun run build && wrangler deploy"
+  "deploy": "bun run build && wrangler deploy",
   "preview": "bun run build && wrangler dev"
   },
   "dependencies": {
