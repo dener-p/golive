@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useI18n } from "@/lib/i18n";
 import { getTransmission, type TransmissionInfo } from "@/lib/transmissions";
 import { startViewing, type ViewingHandle, type ViewingStatus } from "@/lib/viewer";
 
@@ -26,6 +27,7 @@ function RouteComponent() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playerRef = useRef<HTMLDivElement | null>(null);
   const viewingRef = useRef<ViewingHandle | null>(null);
+  const { t } = useI18n();
 
   const [info, setInfo] = useState<TransmissionInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -40,9 +42,9 @@ function RouteComponent() {
     getTransmission(code)
       .then(setInfo)
       .catch((error: Error) => {
-        setLoadError(error.message === "NotFound" ? "Room not found" : "Could not load this room");
+        setLoadError(error.message === "NotFound" ? t("roomNotFound") : t("couldNotLoadRoom"));
       });
-  }, [code]);
+  }, [code, t]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -114,9 +116,7 @@ function RouteComponent() {
     return (
       <div className="container mx-auto max-w-3xl px-6 py-10 text-center">
         <h1 className="text-xl font-bold">{loadError}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Check the room code you were given and try again.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">{t("checkRoomCode")}</p>
       </div>
     );
   }
@@ -129,7 +129,7 @@ function RouteComponent() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight md:text-2xl">
-            {info?.title ?? "Transmission"}
+            {info?.title ?? t("transmission")}
           </h1>
           <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
             <span className="font-mono">#{code}</span>
@@ -143,7 +143,7 @@ function RouteComponent() {
                   referrerPolicy="no-referrer"
                 />
               )}
-              {info?.host.name ?? "the host"}
+              {info?.host.name ?? t("theHost")}
             </span>
           </div>
         </div>
@@ -151,12 +151,12 @@ function RouteComponent() {
           {isLive && (
             <span className="inline-flex h-7 items-center gap-1.5 border border-destructive/40 bg-destructive/15 px-2.5 text-xs font-semibold text-destructive">
               <Radio className="size-3.5 animate-pulse" />
-              LIVE
+              {t("live")}
             </span>
           )}
           <Button variant="outline" onClick={copyLink}>
             {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-            {copied ? "Copied" : "Share"}
+            {copied ? t("copied") : t("share")}
           </Button>
         </div>
       </header>
@@ -177,7 +177,7 @@ function RouteComponent() {
           <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/60 text-muted-foreground">
             <Loader2 className="size-6 animate-spin" />
             <span className="text-sm font-medium">
-              {status === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+              {status === "reconnecting" ? t("reconnecting") : t("connecting")}
             </span>
           </div>
         )}
@@ -197,17 +197,15 @@ function RouteComponent() {
               )}
             </div>
             <div>
-              <p className="text-sm font-semibold">The stream is offline</p>
+              <p className="text-sm font-semibold">{t("streamOffline")}</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                {info?.host.name
-                  ? `${info.host.name} hasn't started yet. `
-                  : "The host hasn't started yet. "}
-                It will play here automatically the moment they go live.
+                {info?.host.name ? t("hostNotStarted", { name: info.host.name }) : t("hostNotStartedGeneric")}
+                {t("willPlayHere")}
               </p>
             </div>
             <span className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
               <Wifi className="size-3.5" />
-              Watching this room for changes…
+              {t("watchingRoomChanges")}
             </span>
           </div>
         )}
@@ -216,7 +214,7 @@ function RouteComponent() {
           <>
             <span className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 border border-destructive/40 bg-destructive/20 px-2 py-0.5 text-xs font-semibold text-destructive backdrop-blur">
               <Radio className="size-3.5 animate-pulse" />
-              LIVE
+              {t("live")}
             </span>
 
             {muted && hasAudio && (
@@ -227,7 +225,7 @@ function RouteComponent() {
               >
                 <span className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/70 px-4 py-2 text-sm font-medium text-white backdrop-blur transition-colors hover:bg-black/90">
                   <VolumeX className="size-4" />
-                  Click to unmute
+                  {t("clickToUnmute")}
                 </span>
               </button>
             )}
@@ -237,7 +235,7 @@ function RouteComponent() {
                 variant="secondary"
                 size="icon"
                 onClick={muted ? handleUnmute : handleMute}
-                aria-label={muted ? "Unmute" : "Mute"}
+                aria-label={muted ? t("unmute") : t("mute")}
               >
                 {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
               </Button>
@@ -257,11 +255,11 @@ function RouteComponent() {
       <footer className="text-sm text-muted-foreground">
         {isLive ? (
           <p>
-            Watching{" "}
+            {t("watchingStart")}{" "}
             <strong className="font-semibold text-foreground">
-              {info?.title ?? "this stream"}
+              {info?.title ?? t("thisStream")}
             </strong>{" "}
-            with
+            {t("with")}{" "}
             {info?.host.image && (
               <img
                 src={info.host.image}
@@ -270,13 +268,11 @@ function RouteComponent() {
                 referrerPolicy="no-referrer"
               />
             )}
-            {info?.host.name ?? "the host"}. Share room <span className="font-mono">#{code}</span>{" "}
-            to invite more people.
+            {info?.host.name ?? t("theHost")}. {t("inviteMore", { code })}
           </p>
         ) : (
           <p>
-            This room stays open — new viewers can join any time. Share room{" "}
-            <span className="font-mono">#{code}</span> to invite more people.
+            {t("roomStaysOpen")} {t("inviteMore", { code })}
           </p>
         )}
       </footer>

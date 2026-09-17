@@ -10,6 +10,7 @@ import {
   type StreamQuality,
 } from "@/lib/quality";
 import { getTransmission, type TransmissionInfo } from "@/lib/transmissions";
+import { useI18n, type MessageKey } from "@/lib/i18n";
 
 export const Route = createFileRoute("/_auth/stream/$code")({
   component: RouteComponent,
@@ -21,6 +22,7 @@ function RouteComponent() {
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const broadcastRef = useRef<BroadcastHandle | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const { t } = useI18n();
 
   const [info, setInfo] = useState<TransmissionInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -31,13 +33,19 @@ function RouteComponent() {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const qualityLabel: Record<StreamQuality, MessageKey> = {
+    low: "qualityLow",
+    medium: "qualityMedium",
+    high: "qualityHigh",
+  };
+
   useEffect(() => {
     getTransmission(code)
       .then(setInfo)
       .catch((error: Error) => {
-        setLoadError(error.message === "NotFound" ? "Room not found" : "Could not load this room");
+        setLoadError(error.message === "NotFound" ? t("roomNotFound") : t("couldNotLoadRoom"));
       });
-  }, [code]);
+  }, [code, t]);
 
   const stopLive = useCallback(() => {
     broadcastRef.current?.stop();
@@ -99,10 +107,10 @@ function RouteComponent() {
       setIsStarting(false);
       setLiveError(
         error instanceof DOMException && error.name === "NotAllowedError"
-          ? "Screen sharing was cancelled"
+          ? t("screenShareCancelled")
           : error instanceof Error
             ? error.message
-            : "Could not start screen sharing",
+            : t("couldNotStartScreenShare"),
       );
     }
   };
@@ -117,9 +125,7 @@ function RouteComponent() {
     return (
       <div className="container mx-auto max-w-3xl px-6 py-10 text-center">
         <h1 className="text-xl font-bold">{loadError}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Check the room code you were given and try again.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">{t("checkRoomCode")}</p>
       </div>
     );
   }
@@ -127,9 +133,9 @@ function RouteComponent() {
   if (info && session.data?.user.id !== info.hostUserId) {
     return (
       <div className="container mx-auto max-w-3xl px-6 py-10 text-center">
-        <h1 className="text-xl font-bold">You're not the host of this room</h1>
+        <h1 className="text-xl font-bold">{t("notTheHost")}</h1>
         <Button render={<a href={`/watch/${code}`} />} nativeButton={false} className="mt-4">
-          Watch it instead
+          {t("watchInstead")}
         </Button>
       </div>
     );
@@ -142,28 +148,28 @@ function RouteComponent() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight md:text-2xl">
-            {info?.title ?? "Transmission"}
+            {info?.title ?? t("transmission")}
           </h1>
           <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
             <span className="font-mono">#{code}</span>
             <span aria-hidden>·</span>
-            <span>Broadcast studio</span>
+            <span>{t("broadcastStudio")}</span>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {isLive && (
             <span className="inline-flex h-7 items-center gap-1.5 border border-destructive/40 bg-destructive/15 px-2.5 text-xs font-semibold text-destructive">
               <Radio className="size-3.5 animate-pulse" />
-              LIVE · {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
+              {t("live")} · {viewerCount} {viewerCount === 1 ? t("viewer") : t("viewers")}
             </span>
           )}
           <Button variant="outline" onClick={copyLink}>
             {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-            {copied ? "Copied" : "Copy link"}
+            {copied ? t("copied") : t("copyLink")}
           </Button>
           {isLive ? (
             <Button variant="destructive" onClick={stopLive}>
-              End stream
+              {t("endStream")}
             </Button>
           ) : (
             <Button onClick={goLive} disabled={isStarting}>
@@ -172,7 +178,7 @@ function RouteComponent() {
               ) : (
                 <Radio className="size-4" />
               )}
-              {isStarting ? "Waiting for picker…" : "Go Live"}
+              {isStarting ? t("waitingForPicker") : t("goLive")}
             </Button>
           )}
         </div>
@@ -193,18 +199,15 @@ function RouteComponent() {
               <MonitorPlay className="size-5" />
             </div>
             <div>
-              <p className="text-sm font-semibold">Ready when you are</p>
+              <p className="text-sm font-semibold">{t("readyWhenYouAre")}</p>
               <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-                Hit Go Live, pick a screen or window, and up to{" "}
-                <strong className="text-foreground">
-                  {STREAM_QUALITIES[quality].width}×{STREAM_QUALITIES[quality].height} ·{" "}
-                  {STREAM_QUALITIES[quality].maxFramerate}fps
-                </strong>{" "}
-                video will be sent to everyone in this room.
+                {t("goLivePickerDesc", {
+                  res: `${STREAM_QUALITIES[quality].width}×${STREAM_QUALITIES[quality].height} · ${STREAM_QUALITIES[quality].maxFramerate}fps`,
+                })}
               </p>
             </div>
             <div className="flex flex-col items-center gap-2">
-              <p className="text-xs text-muted-foreground">Stream quality</p>
+              <p className="text-xs text-muted-foreground">{t("streamQuality")}</p>
               <div className="flex items-center gap-0.5 border border-border bg-muted/40 p-0.5">
                 {STREAM_QUALITY_ORDER.map((streamQuality) => {
                   const preset = STREAM_QUALITIES[streamQuality];
@@ -219,7 +222,7 @@ function RouteComponent() {
                       onClick={() => setQuality(streamQuality)}
                       className="gap-1.5"
                     >
-                      <span className="font-semibold">{preset.label}</span>
+                      <span className="font-semibold">{t(qualityLabel[streamQuality])}</span>
                       <span
                         className={
                           active ? "text-secondary-foreground/70" : "text-muted-foreground"
@@ -238,10 +241,10 @@ function RouteComponent() {
               ) : (
                 <Radio className="size-4" />
               )}
-              {isStarting ? "Waiting for picker…" : "Go Live"}
+              {isStarting ? t("waitingForPicker") : t("goLive")}
             </Button>
             <p className="text-xs text-muted-foreground">
-              Share <span className="font-mono">{watchUrl}</span>
+              {t("shareUrl", { url: watchUrl })}
             </p>
           </div>
         )}
@@ -250,11 +253,11 @@ function RouteComponent() {
           <>
             <span className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 border border-destructive/40 bg-destructive/20 px-2 py-0.5 text-xs font-semibold text-destructive backdrop-blur">
               <Radio className="size-3.5 animate-pulse" />
-              LIVE
+              {t("live")}
             </span>
             <span className="pointer-events-none absolute bottom-3 left-3 inline-flex items-center gap-1.5 px-2 py-0.5 text-xs text-foreground/80 backdrop-blur">
               <Users className="size-3.5" />
-              {viewerCount} {viewerCount === 1 ? "viewer" : "viewers"}
+              {viewerCount} {viewerCount === 1 ? t("viewer") : t("viewers")}
             </span>
           </>
         )}
@@ -262,15 +265,9 @@ function RouteComponent() {
 
       <footer className="text-sm text-muted-foreground">
         {isLive ? (
-          <p>
-            You're broadcasting to everyone in room <span className="font-mono">#{code}</span>.
-            Ending the stream (or closing the share picker) stops it for all viewers.
-          </p>
+          <p>{t("broadcastingFooter", { code })}</p>
         ) : (
-          <p>
-            The room is ready. Viewers who open your link will wait here and your stream will play
-            automatically the moment you go live.
-          </p>
+          <p>{t("roomReadyFooter")}</p>
         )}
       </footer>
     </div>

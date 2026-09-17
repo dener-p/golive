@@ -15,6 +15,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { createTransmission } from "@/lib/transmissions";
+import { useI18n } from "@/lib/i18n";
 
 export const Route = createFileRoute("/_auth/live")({
   component: RouteComponent,
@@ -26,6 +27,7 @@ function RouteComponent() {
   const [title, setTitle] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const { t } = useI18n();
 
   const handleCreate = async () => {
     setIsCreating(true);
@@ -36,7 +38,7 @@ function RouteComponent() {
         params: { code: room.code },
       });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to create transmission");
+      toast.error(error instanceof Error ? error.message : t("createTransmissionFailed"));
       setIsCreating(false);
     }
   };
@@ -55,10 +57,9 @@ function RouteComponent() {
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-6 md:px-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Welcome back</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("welcomeBack")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {session.data?.user.name}. Create a room to stream, or jump into one someone shared with
-          you.
+          {t("welcomeBackDesc", { name: session.data?.user.name ?? "" })}
         </p>
       </div>
 
@@ -68,21 +69,20 @@ function RouteComponent() {
             <div className="flex size-8 items-center justify-center bg-primary/10 text-primary">
               <Radio className="size-4" />
             </div>
-            <CardTitle>Start a transmission</CardTitle>
+            <CardTitle>{t("startATransmission")}</CardTitle>
           </CardHeader>
           <CardDescription>
             <div className="px-(--card-spacing) text-xs/relaxed text-muted-foreground">
-              Create a room and you'll get a short code. Anyone with the link can watch — they just
-              need a Discord account.
+              {t("startATransmissionDesc")}
             </div>
           </CardDescription>
           <CardContent>
             <div className="space-y-2">
-              <Label htmlFor="title">Title</Label>
+              <Label htmlFor="title">{t("titleLabel")}</Label>
               <Input
                 id="title"
                 value={title}
-                placeholder="e.g. Weekend games"
+                placeholder={t("titlePlaceholder")}
                 onChange={(e) => setTitle(e.target.value)}
               />
             </div>
@@ -90,7 +90,7 @@ function RouteComponent() {
           <CardFooter>
             <Button onClick={handleCreate} disabled={isCreating} className="w-full gap-2">
               <Radio className="size-4" />
-              {isCreating ? "Creating…" : "Create room & open studio"}
+              {isCreating ? t("creating") : t("createRoomAndOpenStudio")}
             </Button>
           </CardFooter>
         </Card>
@@ -100,22 +100,21 @@ function RouteComponent() {
             <div className="flex size-8 items-center justify-center bg-primary/10 text-primary">
               <MonitorPlay className="size-4" />
             </div>
-            <CardTitle>Watch a stream</CardTitle>
+            <CardTitle>{t("watchAStream")}</CardTitle>
           </CardHeader>
           <CardDescription>
             <div className="px-(--card-spacing) text-xs/relaxed text-muted-foreground">
-              Enter a room code. If no one is live yet, we'll stay in the room and the stream will
-              start automatically.
+              {t("watchAStreamDesc")}
             </div>
           </CardDescription>
           <CardContent>
             <div className="space-y-2">
-              <Label htmlFor="room-code">Room code</Label>
+              <Label htmlFor="room-code">{t("roomCode")}</Label>
               <div className="flex gap-2">
                 <Input
                   id="room-code"
                   value={roomCode}
-                  placeholder="e.g. 83jkf"
+                  placeholder={t("roomCodePlaceholder")}
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
@@ -127,15 +126,13 @@ function RouteComponent() {
                   }}
                 />
                 <Button onClick={handleJoin} disabled={!roomCode.trim()} className="shrink-0">
-                  Join
+                  {t("join")}
                 </Button>
               </div>
             </div>
           </CardContent>
           <CardFooter>
-            <p className="text-xs text-muted-foreground">
-              Room codes are case-insensitive — no need to type the &ldquo;#&rdquo;.
-            </p>
+            <p className="text-xs text-muted-foreground">{t("roomCodeHint")}</p>
           </CardFooter>
         </Card>
       </div>

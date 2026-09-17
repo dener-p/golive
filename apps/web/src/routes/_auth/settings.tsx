@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { ENV } from "@/env";
+import { useI18n } from "@/lib/i18n";
 import { getTurnStatus, type TurnStatus } from "@/lib/turn-status";
 import {
   createApiKey,
@@ -43,20 +44,20 @@ function StatusPill({ on, label, onLabel }: { on: boolean; label: string; onLabe
   );
 }
 
-function timeAgo(ts: number | null): string {
+function timeAgo(ts: number | null, t: ReturnType<typeof useI18n>["t"]): string {
   if (!ts) {
-    return "never";
+    return t("never");
   }
   const seconds = Math.round((Date.now() - ts) / 1000);
   if (seconds < 60) {
-    return `${seconds}s ago`;
+    return t("secondsAgo", { s: seconds });
   }
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) {
-    return `${minutes}m ago`;
+    return t("minutesAgo", { m: minutes });
   }
   const hours = Math.round(minutes / 60);
-  return `${hours}h ago`;
+  return t("hoursAgo", { h: hours });
 }
 
 function curlTemplate(key: CreatedApiKey): string {
@@ -69,6 +70,7 @@ curl -X POST ${ENV.VITE_SERVER_URL}/api/turn/webhook \\
 }
 
 function RouteComponent() {
+  const { t } = useI18n();
   const [status, setStatus] = useState<TurnStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -90,7 +92,7 @@ function RouteComponent() {
 
   const copy = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
-    toast("Copied");
+    toast(t("copied"));
   };
 
   const handleCreate = async () => {
@@ -105,7 +107,7 @@ function RouteComponent() {
       setName("");
       load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to create key");
+      toast.error(error instanceof Error ? error.message : t("createKeyFailed"));
     } finally {
       setIsCreating(false);
     }
@@ -116,19 +118,19 @@ function RouteComponent() {
       await revokeApiKey(id);
       load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to revoke key");
+      toast.error(error instanceof Error ? error.message : t("revokeKeyFailed"));
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm("Delete this API key? It can no longer be used.")) {
+    if (!window.confirm(t("deleteConfirm"))) {
       return;
     }
     try {
       await deleteApiKey(id);
       load();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to delete key");
+      toast.error(error instanceof Error ? error.message : t("deleteKeyFailed"));
     }
   };
 
@@ -147,11 +149,15 @@ function RouteComponent() {
       );
       setTestResult(
         relays.length > 0
-          ? `${relayUrls.length} relay url${relayUrls.length === 1 ? "" : "s"} returned`
-          : "No relay configured or it expired — clients will connect directly only",
+          ? t(relayUrls.length === 1 ? "relayUrlReturned" : "relayUrlsReturned", {
+              count: relayUrls.length,
+            })
+          : t("noRelayConfigured"),
       );
     } catch (error) {
-      setTestResult(`Test failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      setTestResult(
+        t("testFailed", { message: error instanceof Error ? error.message : "unknown error" }),
+      );
     } finally {
       setIsTesting(false);
     }
@@ -162,11 +168,8 @@ function RouteComponent() {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6 md:px-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Webhook API keys let you push your own TURN relay. Credentials stay in memory until they
-          expire — nothing is persisted.
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{t("settings")}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{t("settingsDesc")}</p>
       </div>
 
       {statusError ? (
@@ -181,11 +184,11 @@ function RouteComponent() {
             <div className="flex size-8 items-center justify-center bg-primary/10 text-primary">
               <Server className="size-4" />
             </div>
-            <CardTitle>Active TURN relay</CardTitle>
+            <CardTitle>{t("activeTurnRelay")}</CardTitle>
             <CardAction>
               <Button variant="outline" size="sm" onClick={load} className="gap-1">
                 <RefreshCw className="size-3" />
-                Refresh
+                {t("refresh")}
               </Button>
             </CardAction>
           </CardHeader>
@@ -193,8 +196,8 @@ function RouteComponent() {
             {status?.relay ? (
               <>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">State</span>
-                  <StatusPill on label="Expired" onLabel="Fresh" />
+                  <span className="text-muted-foreground">{t("state")}</span>
+                  <StatusPill on label={t("expired")} onLabel={t("fresh")} />
                 </div>
                 <div className="flex flex-col gap-1">
                   {status.relay.urls.map((url) => (
@@ -204,28 +207,26 @@ function RouteComponent() {
                   ))}
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">Username</span>
+                  <span className="text-muted-foreground">{t("username")}</span>
                   <span className="font-mono">{status.relay.username ?? "—"}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">Pushed</span>
-                  <span>{timeAgo(status.relay.pushedAt)}</span>
+                  <span className="text-muted-foreground">{t("pushed")}</span>
+                  <span>{timeAgo(status.relay.pushedAt, t)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">Expires</span>
+                  <span className="text-muted-foreground">{t("expires")}</span>
                   <span>
                     {expiresIn != null && expiresIn > 0 ? `${Math.ceil(expiresIn / 1000)}s` : "now"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">Source key</span>
+                  <span className="text-muted-foreground">{t("sourceKey")}</span>
                   <span>{status.relay.keyName}</span>
                 </div>
               </>
             ) : (
-              <p className="text-muted-foreground">
-                No relay config. Create a key and push your TURN server to get relayed connections.
-              </p>
+              <p className="text-muted-foreground">{t("noRelayConfig")}</p>
             )}
           </CardContent>
           <CardFooter>
@@ -236,7 +237,7 @@ function RouteComponent() {
               className="w-full gap-1"
             >
               {isTesting ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-              Test connection
+              {t("testConnection")}
             </Button>
           </CardFooter>
           {testResult ? (
@@ -249,17 +250,17 @@ function RouteComponent() {
             <div className="flex size-8 items-center justify-center bg-primary/10 text-primary">
               <KeyRound className="size-4" />
             </div>
-            <CardTitle>Webhook API keys</CardTitle>
+            <CardTitle>{t("webhookApiKeys")}</CardTitle>
           </CardHeader>
 
           <CardContent>
             <div className="space-y-2">
-              <Label htmlFor="key-name">New key</Label>
+              <Label htmlFor="key-name">{t("newKey")}</Label>
               <div className="flex gap-2">
                 <Input
                   id="key-name"
                   value={name}
-                  placeholder="e.g. My coturn"
+                  placeholder={t("keyNamePlaceholder")}
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
@@ -268,7 +269,7 @@ function RouteComponent() {
                   }}
                 />
                 <Button onClick={handleCreate} disabled={isCreating || !name.trim()} className="shrink-0">
-                  {isCreating ? <Loader2 className="size-4 animate-spin" /> : "Create"}
+                  {isCreating ? <Loader2 className="size-4 animate-spin" /> : t("create")}
                 </Button>
               </div>
             </div>
@@ -287,16 +288,19 @@ function RouteComponent() {
                     </p>
                     <p className="truncate font-mono text-muted-foreground">{key.id}</p>
                     <p className="text-muted-foreground">
-                      Created {timeAgo(key.createdAt)} · Used {timeAgo(key.lastUsedAt)}
+                      {t("createdUsed", {
+                        created: timeAgo(key.createdAt, t),
+                        used: timeAgo(key.lastUsedAt, t),
+                      })}
                     </p>
                   </div>
                   {key.revokedAt ? (
                     <span className="border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      Revoked
+                      {t("revoked")}
                     </span>
                   ) : (
                     <Button variant="outline" size="sm" onClick={() => handleRevoke(key.id)}>
-                      Revoke
+                      {t("revoke")}
                     </Button>
                   )}
                   <Button variant="ghost" size="sm" onClick={() => handleDelete(key.id)}>
@@ -315,30 +319,29 @@ function RouteComponent() {
             <div className="flex size-8 items-center justify-center bg-primary/10 text-primary">
               <KeyRound className="size-4" />
             </div>
-            <CardTitle>Key created — copy the secret now</CardTitle>
+            <CardTitle>{t("keyCreatedCopySecret")}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">Key id (X-Turn-Key)</span>
+              <span className="text-muted-foreground">{t("keyId")}</span>
               <span className="flex items-center gap-2">
                 <code className="font-mono">{created.key.id}</code>
                 <Button variant="outline" size="sm" onClick={() => copy(created.key.id)} className="gap-1">
-                  <Copy className="size-3" /> Copy
+                  <Copy className="size-3" /> {t("copy")}
                 </Button>
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">Secret</span>
+              <span className="text-muted-foreground">{t("secret")}</span>
               <span className="flex items-center gap-2">
                 <code className="font-mono">{created.secret}</code>
                 <Button variant="outline" size="sm" onClick={() => copy(created.secret)} className="gap-1">
-                  <Copy className="size-3" /> Copy
+                  <Copy className="size-3" /> {t("copy")}
                 </Button>
               </span>
             </div>
             <p className="rounded border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
-              This secret is shown once. With it you sign webhook requests (HMAC over the
-              timestamp). If you lose it, revoke the key and create a new one.
+              {t("secretShownOnce")}
             </p>
             <pre className="overflow-x-auto border p-3 font-mono text-[11px] leading-relaxed">
               {curlTemplate(created)}
@@ -349,7 +352,7 @@ function RouteComponent() {
               onClick={() => copy(curlTemplate(created))}
               className="self-start gap-1"
             >
-              <Copy className="size-3" /> Copy curl example
+              <Copy className="size-3" /> {t("copyCurlExample")}
             </Button>
           </CardContent>
         </Card>

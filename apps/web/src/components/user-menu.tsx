@@ -12,10 +12,12 @@ import { Skeleton } from "@golive/ui/components/skeleton";
 import { Link, useNavigate } from "@tanstack/react-router";
 
 import { authClient } from "@/lib/auth-client";
+import { useI18n } from "@/lib/i18n";
 
 export default function UserMenu() {
   const navigate = useNavigate();
   const { data: session, isPending } = authClient.useSession();
+  const { t } = useI18n();
 
   if (isPending) {
     return <Skeleton className="h-9 w-24" />;
@@ -24,7 +26,7 @@ export default function UserMenu() {
   if (!session) {
     return (
       <Link to="/login" search={{ next: "/live" }}>
-        <Button variant="outline">Sign In</Button>
+        <Button variant="outline">{t("signIn")}</Button>
       </Link>
     );
   }
@@ -39,7 +41,7 @@ export default function UserMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent className="bg-card">
         <DropdownMenuGroup>
-          <DropdownMenuLabel>My Account</DropdownMenuLabel>
+          <DropdownMenuLabel>{t("myAccount")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           {session.user.email ? <DropdownMenuItem>{session.user.email}</DropdownMenuItem> : null}
           <DropdownMenuItem
@@ -47,7 +49,7 @@ export default function UserMenu() {
               navigate({ to: "/settings" });
             }}
           >
-            Settings
+            {t("settings")}
           </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
@@ -63,7 +65,7 @@ export default function UserMenu() {
               });
             }}
           >
-            Sign Out
+            {t("signOut")}
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>

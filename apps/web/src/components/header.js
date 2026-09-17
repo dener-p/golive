@@ -1,8 +1,0 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { Link } from "@tanstack/react-router";
-import { Radio } from "lucide-react";
-import { ModeToggle } from "./mode-toggle";
-import UserMenu from "./user-menu";
-export default function Header() {
-    return (_jsx("header", { className: "sticky top-0 z-10 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60", children: _jsxs("div", { className: "mx-auto flex h-14 w-full max-w-4xl items-center justify-between px-4 md:px-6", children: [_jsxs(Link, { to: "/", className: "flex items-center gap-2 text-sm font-semibold", children: [_jsx("span", { className: "flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary", children: _jsx(Radio, { className: "size-4" }) }), "GoLive"] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx(ModeToggle, {}), _jsx(UserMenu, {})] })] }) }));
-}

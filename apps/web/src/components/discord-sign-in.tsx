@@ -2,13 +2,15 @@ import { Button } from "@golive/ui/components/button";
 import { useState } from "react";
 
 import { authClient } from "@/lib/auth-client";
-import {ENV}from "../env";
+import { useI18n } from "@/lib/i18n";
+import{ENV}from "../env";
 
 import Loader from "./loader";
 
 export default function DiscordSignIn({ next }: { next?: string }) {
   const { isPending } = authClient.useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { t } = useI18n();
 
   console.log({env:ENV.VITE_CALLBACK_URL})
   const handleSignIn = async () => {
@@ -31,10 +33,8 @@ export default function DiscordSignIn({ next }: { next?: string }) {
   return (
     <div className="mx-auto mt-10 flex w-full max-w-md flex-col gap-6 p-6">
       <div className="space-y-2 text-center">
-        <h1 className="text-3xl font-bold">Welcome to GoLive</h1>
-        <p className="text-sm text-muted-foreground">
-          Share your screen with friends. Discord is the only way in.
-        </p>
+        <h1 className="text-3xl font-bold">{t("welcomeToGoLive")}</h1>
+        <p className="text-sm text-muted-foreground">{t("discordOnlySignIn")}</p>
       </div>
 
       <Button
@@ -43,7 +43,7 @@ export default function DiscordSignIn({ next }: { next?: string }) {
         className="h-11 w-full gap-2 text-base"
       >
         <DiscordMark className="size-6" />
-        {isSubmitting ? "Redirecting to Discord..." : "Continue with Discord"}
+        {isSubmitting ? t("redirectingToDiscord") : t("continueWithDiscord")}
       </Button>
     </div>
   );
