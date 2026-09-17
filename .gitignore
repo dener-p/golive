@@ -16,6 +16,9 @@ apps/web/src/routeTree.gen.ts
 local.db
 local.db-*
 
+# Varlock generated env typing
+apps/turn/src/env.ts
+
 # Environment variables
 .env
 .env*.local

@@ -45,17 +45,18 @@ function RouteComponent() {
   }, [code]);
 
   useEffect(() => {
-    if (!videoRef.current) {
+    const video = videoRef.current;
+    if (!video) {
       return;
     }
-    videoRef.current.muted = true;
+    video.muted = true;
     viewingRef.current = startViewing({
       code,
-      video: videoRef.current,
+      video,
       onStatus: setStatus,
       onStream: (stream) => {
         setHasAudio(Boolean(stream?.getAudioTracks().length));
-        videoRef.current!.muted = true;
+        video.muted = true;
         setMuted(true);
       },
       onError: setWatchError,

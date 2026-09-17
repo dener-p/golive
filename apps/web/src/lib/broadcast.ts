@@ -73,7 +73,7 @@ export function startBroadcast(options: {
     onMessage(message) {
       switch (message.type) {
         case "viewer-joined": {
-          getIceServers().then((iceServers) => {
+          getIceServers(code).then((iceServers) => {
             const pc = new RTCPeerConnection({ iceServers });
             for (const track of stream.getTracks()) {
               pc.addTrack(track, stream);

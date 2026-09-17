@@ -33,7 +33,7 @@ export function startViewing(options: {
   const makePc = async () => {
     clearPc();
     const generation = pcGeneration;
-    const iceServers = await getIceServers();
+    const iceServers = await getIceServers(options.code);
     if (stopped || generation !== pcGeneration) {
       return;
     }

@@ -1,25 +1,19 @@
 {
-  "name": "server",
+  "name": "turn",
+  "version": "0.0.0",
+  "private": true,
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
     "build": "tsdown",
     "check-types": "tsc --noEmit",
-    "compile": "bun build --compile --no-compile-autoload-dotenv --minify --sourcemap --bytecode ./src/index.ts --outfile server",
     "dev": "bun run --hot src/index.ts",
     "start": "bun run dist/index.mjs",
     "env:generate": "varlock codegen"
   },
   "dependencies": {
-    "@golive/auth": "workspace:*",
-    "@golive/db": "workspace:*",
     "@golive/turn": "workspace:*",
-    "better-auth": "catalog:",
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.7",
-    "libsql": "catalog:",
-    "varlock": "catalog:",
-    "zod": "catalog:"
+    "varlock": "catalog:"
   },
   "devDependencies": {
     "@golive/config": "workspace:*",

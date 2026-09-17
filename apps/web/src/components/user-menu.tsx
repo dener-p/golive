@@ -43,6 +43,13 @@ export default function UserMenu() {
           <DropdownMenuSeparator />
           {session.user.email ? <DropdownMenuItem>{session.user.email}</DropdownMenuItem> : null}
           <DropdownMenuItem
+            onClick={() => {
+              navigate({ to: "/settings" });
+            }}
+          >
+            Settings
+          </DropdownMenuItem>
+          <DropdownMenuItem
             variant="destructive"
             onClick={() => {
               authClient.signOut({
