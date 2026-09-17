@@ -1,4 +1,5 @@
 import { connectSignaling, type SignalingSession } from "./signaling";
+import { getIceServers } from "./turn";
 
 export type ViewingHandle = {
   stop: () => void;
@@ -16,6 +17,8 @@ export function startViewing(options: {
   let session: SignalingSession;
   let pc: RTCPeerConnection | null = null;
   let hostId: string | null = null;
+  let stopped = false;
+  let pcGeneration = 0;
 
   const clearPc = () => {
     if (pc) {
@@ -24,11 +27,17 @@ export function startViewing(options: {
       pc.close();
       pc = null;
     }
+    pcGeneration += 1;
   };
 
-  const makePc = () => {
+  const makePc = async () => {
     clearPc();
-    const next = new RTCPeerConnection();
+    const generation = pcGeneration;
+    const iceServers = await getIceServers();
+    if (stopped || generation !== pcGeneration) {
+      return;
+    }
+    const next = new RTCPeerConnection({ iceServers });
     next.ontrack = (event) => {
       const stream = event.streams[0] ?? null;
       options.video.srcObject = stream;
@@ -49,7 +58,7 @@ export function startViewing(options: {
   };
 
   session = connectSignaling(options.code, {
-    onMessage(message) {
+    async onMessage(message) {
       switch (message.type) {
         case "joined":
           hostId = message.hostId ?? null;
@@ -60,11 +69,13 @@ export function startViewing(options: {
         case "offer":
           hostId = message.from;
           if (!pc) {
-            makePc();
+            await makePc();
+          }
+          if (!pc || stopped) {
+            return;
           }
           options.onStatus("connecting");
-          pc!
-            .setRemoteDescription(message.sdp)
+          pc.setRemoteDescription(message.sdp)
             .then(() => pc!.createAnswer())
             .then((answer) => pc!.setLocalDescription(answer))
             .then(() => {
@@ -105,6 +116,7 @@ export function startViewing(options: {
 
   return {
     stop() {
+      stopped = true;
       clearPc();
       session.close();
       options.video.srcObject = null;

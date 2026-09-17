@@ -4,6 +4,11 @@ import { Check, Copy, Loader2, MonitorPlay, Radio, Users } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { startBroadcast, type BroadcastHandle } from "@/lib/broadcast";
+import {
+  STREAM_QUALITIES,
+  STREAM_QUALITY_ORDER,
+  type StreamQuality,
+} from "@/lib/quality";
 import { getTransmission, type TransmissionInfo } from "@/lib/transmissions";
 
 export const Route = createFileRoute("/_auth/stream/$code")({
@@ -22,6 +27,7 @@ function RouteComponent() {
   const [isLive, setIsLive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [viewerCount, setViewerCount] = useState(0);
+  const [quality, setQuality] = useState<StreamQuality>("high");
   const [liveError, setLiveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -58,11 +64,12 @@ function RouteComponent() {
     setLiveError(null);
     setIsStarting(true);
     try {
+      const preset = STREAM_QUALITIES[quality];
       const media = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 60, max: 60 },
+          width: { ideal: preset.width },
+          height: { ideal: preset.height },
+          frameRate: { ideal: preset.maxFramerate, max: preset.maxFramerate },
         },
         audio: {
           echoCancellation: false,
@@ -80,6 +87,7 @@ function RouteComponent() {
       broadcastRef.current = startBroadcast({
         code,
         stream: media,
+        quality,
         onViewerCount: setViewerCount,
         onError: setLiveError,
       });
@@ -188,9 +196,41 @@ function RouteComponent() {
               <p className="text-sm font-semibold">Ready when you are</p>
               <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
                 Hit Go Live, pick a screen or window, and up to{" "}
-                <strong className="text-foreground">1080p / 60fps</strong> video will be sent to
-                everyone in this room.
+                <strong className="text-foreground">
+                  {STREAM_QUALITIES[quality].width}×{STREAM_QUALITIES[quality].height} ·{" "}
+                  {STREAM_QUALITIES[quality].maxFramerate}fps
+                </strong>{" "}
+                video will be sent to everyone in this room.
               </p>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-xs text-muted-foreground">Stream quality</p>
+              <div className="flex items-center gap-0.5 border border-border bg-muted/40 p-0.5">
+                {STREAM_QUALITY_ORDER.map((streamQuality) => {
+                  const preset = STREAM_QUALITIES[streamQuality];
+                  const active = quality === streamQuality;
+                  return (
+                    <Button
+                      key={streamQuality}
+                      type="button"
+                      size="sm"
+                      variant={active ? "secondary" : "ghost"}
+                      disabled={isStarting}
+                      onClick={() => setQuality(streamQuality)}
+                      className="gap-1.5"
+                    >
+                      <span className="font-semibold">{preset.label}</span>
+                      <span
+                        className={
+                          active ? "text-secondary-foreground/70" : "text-muted-foreground"
+                        }
+                      >
+                        {preset.description}
+                      </span>
+                    </Button>
+                  );
+                })}
+              </div>
             </div>
             <Button onClick={goLive} disabled={isStarting} className="gap-2">
               {isStarting ? (

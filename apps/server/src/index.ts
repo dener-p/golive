@@ -7,16 +7,21 @@ import { env } from "./env.server";
 import { realtimeApp } from "./realtime";
 import { auth } from "./services";
 import { transmissionsApp } from "./transmissions";
+import { turnApp } from "./turn";
 
 const { websocket } = createBunWebSocket();
 
 const app = new Hono();
 
 app.use(logger());
+const allowedOrigins = env.CORS_ORIGIN.split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 app.use(
   "/*",
   cors({
-    origin: env.CORS_ORIGIN,
+    origin: allowedOrigins,
     allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,
@@ -26,6 +31,7 @@ app.use(
 app.on(["POST", "GET"], "/api/auth/*", async (c) => auth.handler(c.req.raw));
 
 app.route("/api/transmissions", transmissionsApp);
+app.route("/api/turn", turnApp);
 app.route("/", realtimeApp);
 
 app.get("/", (c) => {
