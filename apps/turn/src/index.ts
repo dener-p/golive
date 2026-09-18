@@ -20,8 +20,8 @@ function config(): Config {
   const cloudflareKeyId = env.CLOUDFLARE_TURN_KEY_ID;
   const cloudflareKeySecret = env.CLOUDFLARE_TURN_KEY_SECRET;
   const webhookUrl = env.TURN_WEBHOOK_URL;
-  const webhookKey = env.TURN_WEBHOOK_KEY;
-  const webhookKeySecret = env.TURN_WEBHOOK_KEY_SECRET;
+  const webhookKey = env.TURN_WEBHOOK_KEY.split(",");
+  const webhookKeySecret = env.TURN_WEBHOOK_KEY_SECRET.split(",");
   if (
     !cloudflareKeyId ||
     !cloudflareKeySecret ||
@@ -58,19 +58,23 @@ async function pushCredentials(): Promise<IceServer[]> {
     ttl,
   );
   const timestamp = String(Math.floor(Date.now() / 1000));
+  webhookKey.forEach( async (e,i) => {
+    
   const res = await fetch(webhookUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Turn-Key": webhookKey,
+      "X-Turn-Key": e,
       "X-Turn-Timestamp": timestamp,
-      "X-Turn-Signature": hmacSignature(webhookKeySecret, timestamp),
+      "X-Turn-Signature": hmacSignature(webhookKeySecret[i], timestamp),
     },
     body: JSON.stringify({ iceServers, ttl }),
   });
-  if (!res.ok) {
-    throw new Error(`webhook rejected push: ${res.status}`);
-  }
+    if (!res.ok) {
+      throw new Error(`webhook rejected push: ${res.status}`);
+    }
+  })
+
   return iceServers;
 }
 

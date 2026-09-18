@@ -1,6 +1,10 @@
 # golive
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Router, Hono, and more.
+Live streaming platform where you can start a stream straight from your browser and share a room code so others can watch in real time.
+
+Try it live at **[golive.puhl.dev](https://golive.puhl.dev)**.
+
+Built with the [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Router, Hono, and more.
 
 ## Features
 
@@ -18,38 +22,17 @@ This project was created with [Better-T-Stack](https://github.com/AmanVarshney01
 
 ## Getting Started
 
-First, install the dependencies:
+Clone the repo, install the dependencies, and start the dev servers:
 
 ```bash
 bun install
-```
-
-## Database Setup
-
-This project uses SQLite with Drizzle ORM.
-
-1. Start the local SQLite database (optional):
-
-```bash
-bun run db:local
-```
-
-2. Update your `.env` file in the `apps/server` directory with the appropriate connection details if needed.
-
-3. Apply the schema to your database:
-
-```bash
-bun run db:push
-```
-
-Then, run the development server:
-
-```bash
 bun run dev
 ```
 
 Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
 The API is running at [http://localhost:3000](http://localhost:3000).
+
+> Note: Golive is invite-only, so a working auth setup (Discord OAuth) is required to stream. See Environment Configuration below.
 
 ## UI Customization
 

@@ -61,3 +61,8 @@ dev-dist
 
 !.env.schema
 /src/env.ts
+
+# Compiled JS duplicates of TS/TSX sources (stale copies shadow the real
+# sources in Vite resolution and can drop routes, e.g. routeTree.gen.js)
+/src/**/*.js
+/vite.config.js

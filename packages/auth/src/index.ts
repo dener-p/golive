@@ -21,7 +21,7 @@ export function createAuth(
       provider: "sqlite",
       schema,
     }),
-    trustedOrigins: [env.CORS_ORIGIN, ...desktopOrigins],
+    trustedOrigins: [...env.CORS_ORIGIN.split(","), ...desktopOrigins],
     socialProviders: {
       discord: {
         clientId: env.DISCORD_CLIENT_ID,
@@ -39,6 +39,10 @@ export function createAuth(
         secure: true,
         httpOnly: true,
       },
+      crossSubDomainCookies: {
+        enabled: "true",
+        domain: "puhl.dev"
+      }
     },
     plugins: [],
   });
