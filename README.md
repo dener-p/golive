@@ -64,37 +64,50 @@ link (from another machine, or another browser profile) to watch. No login for e
 `-source` also accepts a raw GStreamer source element/fragment if you want to point it at
 something other than the real screen or the test pattern.
 
-## What I verified in this sandbox
+## What I verified
 
-I don't have a GUI browser or a real screen here, so I couldn't click through the actual
-HTML page, but I did verify the parts that are actually hard, end to end, with real
-network sockets and real code (no mocks):
+Verified on a real Windows machine (AMD RX 9060 XT, real screen + Parsec virtual display),
+with real network sockets, real code, and the real binaries (no mocks):
 
 1. `helper/av1rtp_test.go`: the packetizer's output round-trips correctly through pion's
    independent AV1 RTP depacketizer for a range of OBU sizes (tiny, huge, fragmented
    across many packets).
-2. Built and ran the real `server` and `helper` binaries together, plus a throwaway pion
-   client standing in for a browser viewer (browsers speak the same WebRTC/RTP wire
-   protocol, so this exercises the identical code path a real Chrome tab would):
-   real GStreamer test-pattern capture → real SVT-AV1 encode → real RTP packetization →
-   a real ICE/DTLS/SRTP handshake over the loopback network → **the viewer's WebRTC stack
-   received and decoded actual RTP video packets** (logs below).
-3. Repeated with **three simultaneous viewers** against the same room: one encoder
-   instance, three independent `PeerConnection`s, all receiving packets — confirming the
-   "encode once, fan out N ways" design actually holds.
+2. Real **Windows screen capture** (`d3d11screencapturesrc`) → real **AMD hardware AV1
+   encode** (`amfav1enc`, auto-detected) → RTP packetization → real ICE/DTLS/SRTP to a
+   stand-in viewer over the network → the viewer receives RTP video + keyframes at the
+   configured GOP interval. Encoder choice, monitor index, and per-viewer ICE path are all
+   visible in the helper log and host UI.
+3. The **diagnostics** slice: the helper now reports per-viewer ICE gather time, connect
+   time, selected candidate type (`host`/`srflx`/`prflx`), and RTCP-derived RTT/loss/jitter
+   (computed against the Sender Reports pion generates), plus disconnect reason. The host
+   UI shows a per-viewer table, and the viewer page shows time-to-first-frame.
+4. **Capture-source enumeration**: a `list-sources` command round-trips through the relay
+   and lists real monitors (index, device name, primary) for the host-UI picker.
+5. Three simultaneous viewers (pion stand-ins) against one room: one encoder instance,
+   three independent `PeerConnection`s, all receiving packets — the "encode once, fan out
+   N ways" design holds.
 
 ```
-viewer v1: connected via direct prflx (local host 192.0.2.2:59675 <-> remote prflx 192.0.2.2:37103)
-got track video/AV1
-SUCCESS: received first RTP frame
+2026/09/25 viewer v1: connected via direct prflx (local host fdfd::1aba:db37:55921 <-> remote prflx fdfd::1aba:db37:55945)
+RESULT viewer=2ea81f3707 direct=true connectedMs=1263 rtpPkts=1171 keyframes=4 rate=195 pps
 ```
 
-What I did *not* verify here: an actual browser tab decoding AV1 via WebCodecs/WebRTC
-(needs a real Chrome + display), real screen capture on Windows/macOS (this sandbox is
-headless Linux — `ximagesrc`/test-pattern is what I could exercise), and a real NAT/TURN
-failure case. The `videotestsrc`-based flow having exercised the encoder → RTP → ICE →
-SRTP path end-to-end is a good sign for those, but isn't a substitute for trying it on
-your actual machine.
+What I still cannot verify here: an actual browser tab decoding AV1 via WebCodecs/WebRTC
+(needs you to open the viewer link in a real Chrome) and real-world NAT combinations
+(loopback always connects). For NAT testing, `tools/webrtc-check` is the stand-in viewer —
+run the helper on one network and the check tool on another and compare the `direct=`
+result (see "Development tools" below).
+
+## Development tools
+
+- `tools/webrtc-check` — scriptable stand-in viewer for connection testing: connects to a
+  room exactly like a browser tab (WS signaling, WebRTC answer, trickle ICE), counts RTP
+  packets/keyframes, and also opens a host-role socket to print live status and capture
+  sources. This is the seed of the NAT regression suite.
+
+  ```bash
+  go run ./tools/webrtc-check -server http://<server-host>:8080 -room <roomId> -key <hostKey> -seconds 8
+  ```
 
 ## Known simplifications vs. the full spec (intentional, per your instructions)
 

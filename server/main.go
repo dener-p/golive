@@ -44,6 +44,7 @@ type room struct {
 	hosts   map[*client]bool
 	viewers map[string]*client
 	status  json.RawMessage
+	sources json.RawMessage
 	live    bool
 }
 
@@ -212,6 +213,11 @@ func wsHandler(w http.ResponseWriter, req *http.Request) {
 				if v := r.viewers[m.Viewer]; v != nil {
 					v.send(map[string]any{"type": "signal", "data": m.Data})
 				}
+			case "sources":
+				r.sources = m.Data
+				for h := range r.hosts {
+					h.send(map[string]any{"type": "sources", "data": r.sources})
+				}
 			}
 			r.mu.Unlock()
 		}
@@ -220,6 +226,9 @@ func wsHandler(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.hosts[c] = true
 		c.send(r.hostStatus())
+		if r.sources != nil {
+			c.send(map[string]any{"type": "sources", "data": r.sources})
+		}
 		r.mu.Unlock()
 		defer func() {
 			r.mu.Lock()

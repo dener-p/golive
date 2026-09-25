@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -36,14 +37,26 @@ var stunServers = []string{
 }
 
 type peer struct {
-	id      string
-	pc      *webrtc.PeerConnection
-	ready   chan struct{} // closed once the offer has been sent
-	mu      sync.Mutex
+	id    string
+	pc    *webrtc.PeerConnection
+	ready chan struct{} // closed once the offer has been sent
+	mu    sync.Mutex
+	sender  *webrtc.RTPSender
 	pending []webrtc.ICECandidateInit
 	hasRem  bool
-	state   string
-	path    string
+	// connection state (updated by state callbacks; read under mu)
+	state  string
+	path   string
+	reason string
+	// timing (all under mu)
+	createdAt        time.Time // NewPeerConnection
+	offerAt          time.Time // offer sent to viewer
+	gatherCompleteAt time.Time // ICE gathering complete
+	connectAt        time.Time // PeerConnectionStateConnected
+	// stats (under mu, refreshed by rtcpLoop)
+	rttMs    int
+	loss     uint32 // cumulative RTP packets lost, from viewer Receiver Reports
+	jitterMs int
 }
 
 type helper struct {
@@ -204,9 +217,10 @@ func (h *helper) session() error {
 			Cmd    string          `json:"cmd"`
 			Data   json.RawMessage `json:"data"`
 			Params struct {
-				Bitrate int `json:"bitrate"`
-				FPS     int `json:"fps"`
-				Monitor int `json:"monitor"`
+				Bitrate int    `json:"bitrate"`
+				FPS     int    `json:"fps"`
+				Monitor int    `json:"monitor"`
+				Source  string `json:"source"` // "" = screen, "test" = test pattern
 			} `json:"params"`
 		}
 		if err := ws.ReadJSON(&m); err != nil {
@@ -229,10 +243,17 @@ func (h *helper) session() error {
 				if m.Params.FPS > 0 {
 					o.FPS = m.Params.FPS
 				}
+				if m.Params.Source != "" {
+					o.Source = m.Params.Source
+				}
 				o.Monitor = m.Params.Monitor
 				go h.start(o)
 			case "stop":
 				go h.stop()
+			case "list-sources":
+				go func() {
+					h.send(map[string]any{"type": "sources", "data": map[string]any{"sources": enumMonitors()}})
+				}()
 			}
 		}
 	}
@@ -264,10 +285,16 @@ func (h *helper) sendStatus() {
 	h.capMu.Unlock()
 
 	h.mu.Lock()
-	viewers := []map[string]string{}
+	viewers := []map[string]any{}
 	for _, p := range h.peers {
 		p.mu.Lock()
-		viewers = append(viewers, map[string]string{"id": p.id, "state": p.state, "path": p.path})
+		viewers = append(viewers, map[string]any{
+			"id": p.id, "state": p.state, "path": p.path, "reason": p.reason,
+			"rttMs": p.rttMs, "loss": p.loss, "jitterMs": p.jitterMs,
+			"gatherMs": msSince(p.createdAt, p.gatherCompleteAt),
+			"checkMs":  msSince(p.offerAt, p.connectAt),
+			"connectMs": msSince(p.createdAt, p.connectAt),
+		})
 		p.mu.Unlock()
 	}
 	h.mu.Unlock()
@@ -288,8 +315,17 @@ func (h *helper) statsLoop() {
 		h.kbps = int(h.bytes * 8 / 1000 / 2)
 		h.bytes = 0
 		h.statMu.Unlock()
+		// per-viewer stats come from RTCP Receiver Reports (see rtcpLoop); no extra
+		// polling here — the SRs pion generates make the RTT measurement valid.
 		h.sendStatus()
 	}
+}
+
+func msSince(from, to time.Time) int {
+	if from.IsZero() || to.IsZero() || to.Before(from) {
+		return -1
+	}
+	return int(to.Sub(from).Milliseconds())
 }
 
 // ---------------------------------------------------------------- capture control
@@ -362,22 +398,23 @@ func (h *helper) addViewer(id string) {
 		logf("viewer %s: %v", id, err)
 		return
 	}
-	p := &peer{id: id, pc: pc, ready: make(chan struct{}), state: "new"}
+	p := &peer{id: id, pc: pc, ready: make(chan struct{}), state: "new", createdAt: time.Now()}
 	sender, err := pc.AddTrack(h.track)
 	if err != nil {
 		logf("viewer %s: %v", id, err)
 		pc.Close()
 		return
 	}
-	go func() { // RTCP must be read for NACK/reports to work
-		buf := make([]byte, 1500)
-		for {
-			if _, _, err := sender.Read(buf); err != nil {
-				return
-			}
-		}
-	}()
+	p.sender = sender
+	go h.rtcpLoop(p) // RTCP must be read for NACK/reports to work; also gives us loss/jitter
 
+	pc.OnICEGatheringStateChange(func(s webrtc.ICEGatheringState) {
+		if s == webrtc.ICEGatheringStateComplete {
+			p.mu.Lock()
+			p.gatherCompleteAt = time.Now()
+			p.mu.Unlock()
+		}
+	})
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) { // full trickle: send every candidate immediately
 		if c == nil {
 			return
@@ -393,6 +430,16 @@ func (h *helper) addViewer(id string) {
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		p.mu.Lock()
 		p.state = s.String()
+		switch s {
+		case webrtc.PeerConnectionStateConnected:
+			p.connectAt, p.reason = time.Now(), ""
+		case webrtc.PeerConnectionStateDisconnected:
+			p.reason = "disconnected"
+		case webrtc.PeerConnectionStateFailed:
+			p.reason = "direct connection failed (no route; TURN is v2+)"
+		case webrtc.PeerConnectionStateClosed:
+			p.reason = "closed"
+		}
 		p.mu.Unlock()
 		switch s {
 		case webrtc.PeerConnectionStateConnected:
@@ -405,7 +452,7 @@ func (h *helper) addViewer(id string) {
 					pair.Local.Typ, pair.Local.Address, pair.Local.Port, pair.Remote.Typ, pair.Remote.Address, pair.Remote.Port)
 			}
 		case webrtc.PeerConnectionStateFailed:
-			logf("viewer %s: FAILED - direct connection impossible and no TURN configured", id)
+			logf("viewer %s: FAILED - direct connection impossible (no TURN in v1)", id)
 			h.sendToViewer(id, map[string]any{"error": "Direct connection failed. The host needs to configure a TURN server for this network."})
 			h.removeViewer(id)
 		}
@@ -425,6 +472,9 @@ func (h *helper) addViewer(id string) {
 		h.removeViewer(id)
 		return
 	}
+	p.mu.Lock()
+	p.offerAt = time.Now()
+	p.mu.Unlock()
 	h.sendToViewer(id, map[string]any{"sdp": pc.LocalDescription()})
 	close(p.ready)
 	logf("viewer %s: offer sent", id)
@@ -483,6 +533,41 @@ func (h *helper) onSignal(id string, raw json.RawMessage) {
 			logf("viewer %s: candidate: %v", id, err)
 		}
 	}
+}
+
+// rtcpLoop drains the viewer's RTCP so NACK/reports work, and keeps per-viewer
+// stats fresh from the viewer's Receiver Reports: RTT (computed against the Sender
+// Reports pion generates for us), cumulative loss, and jitter.
+func (h *helper) rtcpLoop(p *peer) {
+	for {
+		pkts, _, err := p.sender.ReadRTCP()
+		if err != nil {
+			return
+		}
+		now := ntpMid(time.Now())
+		for _, pkt := range pkts {
+			if rr, ok := pkt.(*rtcp.ReceiverReport); ok {
+				for _, rep := range rr.Reports {
+					p.mu.Lock()
+					if rep.LastSenderReport != 0 {
+						rtt := now - rep.LastSenderReport - rep.Delay // 1/65536 s units
+						p.rttMs = int(rtt) * 1000 / 65536
+					}
+					p.loss = rep.TotalLost
+					p.jitterMs = int(rep.Jitter / 90) // 90 kHz RTP clock -> ms
+					p.mu.Unlock()
+				}
+			}
+		}
+	}
+}
+
+// ntpMid returns the middle 32 bits of the 64-bit NTP timestamp for now, the unit
+// used by RTCP LastSenderReport / Delay fields (1/65536 s).
+func ntpMid(t time.Time) uint32 {
+	sec := uint64(t.Unix() + 2208988800)               // seconds since 1900
+	frac := uint64(t.Nanosecond()) * (1 << 32) / 1e9   // 32-bit fraction
+	return uint32((sec&0xffff)<<16) | uint32(frac>>16) // middle 32 bits
 }
 
 func (h *helper) removeViewer(id string) {

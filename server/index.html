@@ -54,6 +54,12 @@
   .muted { color: #8a919c; font-size: 12px; }
   a { color: #6ea8fe; }
   .hint { font-size: 12px; color: #6b7280; margin-top: 4px; }
+  table.vtable { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  table.vtable th, table.vtable td {
+    text-align: left; padding: 4px 8px; border-bottom: 1px solid #23262b; white-space: nowrap;
+  }
+  table.vtable th { color: #6b7280; font-weight: 500; }
+  table.vtable td { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -69,6 +75,7 @@
       <span class="badge" id="pathBadge" style="display:none"></span>
     </div>
     <div class="stats" id="viewerStats" style="display:none">
+      <div class="stat"><b id="stFirst">–</b><span>first frame</span></div>
       <div class="stat"><b id="stFps">–</b><span>fps</span></div>
       <div class="stat"><b id="stBitrate">–</b><span>kbit/s</span></div>
       <div class="stat"><b id="stRtt">–</b><span>rtt ms</span></div>
@@ -113,6 +120,17 @@
       <div class="linkbox" id="roomLink" style="flex:1"></div>
       <button class="ghost" id="copyBtn">Copy</button>
     </div>
+
+    <div id="viewersBox" style="display:none; margin-top:14px">
+      <div class="muted">viewer connections (direct P2P / STUN only in v1)</div>
+      <table class="vtable">
+        <thead><tr>
+          <th>id</th><th>state</th><th>path</th><th>rtt</th><th>lost</th><th>jitter</th>
+          <th>gather</th><th>connect</th>
+        </tr></thead>
+        <tbody id="viewersTbody"></tbody>
+      </table>
+    </div>
     <div class="err-msg" id="hostErr"></div>
   </div>
 
@@ -153,6 +171,7 @@ function runViewer() {
   const statsBox = document.getElementById("viewerStats");
 
   let pc = null, statTimer = null;
+  let firstFrameGot = false, connectAt = 0;
 
   function connect() {
     const ws = new WebSocket(`${wsBase}/ws?role=viewer&room=${encodeURIComponent(roomId)}`);
@@ -194,7 +213,7 @@ function runViewer() {
         if (s === "connected" || s === "completed") errBox.textContent = "";
       };
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") startStats();
+        if (pc.connectionState === "connected") { connectAt = performance.now(); startStats(); }
       };
       await pc.setRemoteDescription(data.sdp);
       const answer = await pc.createAnswer();
@@ -208,6 +227,8 @@ function runViewer() {
   function closePeer() {
     if (statTimer) clearInterval(statTimer);
     if (pc) { pc.close(); pc = null; }
+    firstFrameGot = false;
+    document.getElementById("stFirst").textContent = "–";
     statsBox.style.display = "none";
     pathBadge.style.display = "none";
   }
@@ -222,6 +243,10 @@ function runViewer() {
         if (r.type === "inbound-rtp" && r.kind === "video") {
           const now = performance.now();
           const dt = (now - lastTime) / 1000;
+          if (!firstFrameGot && (r.framesDecoded || 0) > 0) {
+            firstFrameGot = true;
+            document.getElementById("stFirst").textContent = ((now - connectAt) / 1000).toFixed(1) + " s";
+          }
           const kbps = Math.round(((r.bytesReceived - lastBytes) * 8) / 1000 / dt);
           const fps = Math.round((r.framesDecoded - lastFrames) / dt);
           document.getElementById("stBitrate").textContent = kbps > 0 ? kbps : "–";
@@ -265,7 +290,7 @@ function runHost() {
 
   noHelperCmd.textContent = `golive-helper --server ${location.origin} --room ${roomId} --key ${key || "<see helper output>"}`;
 
-  let ws = null, viewerCount = 0;
+  let ws = null, viewerCount = 0, prevOnline = false, srcRequested = false;
   const peers = new Map(); // viewerId -> RTCPeerConnection (host side of the SAME connection the helper drives — see note below)
 
   // NOTE: per the architecture, the *host browser never touches the helper directly and
@@ -295,7 +320,16 @@ function runHost() {
         noHelper.style.display = online ? "none" : "flex";
         noHelperCmd.style.display = online ? "none" : "block";
         if (online && m.info) applyStatus(m.info);
-        if (!online) { dotLive.className = "dot"; txtLive.textContent = "idle"; }
+        if (!online) { dotLive.className = "dot"; txtLive.textContent = "idle"; renderViewers([]); }
+        // ask for the monitor list each time the helper (re)connects
+        if (online && !prevOnline) srcRequested = false;
+        if (online && !srcRequested) {
+          ws.send(JSON.stringify({ type: "cmd", cmd: "list-sources" }));
+          srcRequested = true;
+        }
+        prevOnline = online;
+      } else if (m.type === "sources") {
+        buildSourceSelect((m.data && m.data.sources) || []);
       } else if (m.type === "error") {
         hostErr.textContent = m.message;
       }
@@ -310,16 +344,57 @@ function runHost() {
     startBtn.disabled = live;
     stopBtn.disabled = !live;
     viewerCount = (info.viewers || []).length;
+    renderViewers(info.viewers || []);
     updateEstimate();
+  }
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function buildSourceSelect(list) {
+    const sel = document.getElementById("srcSel");
+    const prev = sel.value;
+    sel.textContent = "";
+    if (!list.length) {
+      sel.append(new Option("Screen", "0")); // non-Windows fallback: single screen
+    } else {
+      for (const m of list) {
+        sel.append(new Option(
+          `Screen ${m.index}: ${m.name}${m.primary ? " (primary)" : ""}`, String(m.index)));
+      }
+    }
+    sel.append(new Option("Test pattern", "test"));
+    if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  }
+
+  function renderViewers(list) {
+    const box = document.getElementById("viewersBox");
+    const tbody = document.getElementById("viewersTbody");
+    tbody.textContent = "";
+    if (!list.length) { box.style.display = "none"; return; }
+    box.style.display = "block";
+    const ms = (v, k) => (v[k] > 0 ? v[k] + " ms" : "–");
+    for (const v of list) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td>${esc(v.id)}</td><td>${esc(v.state)}</td><td>${esc(v.path)}</td>` +
+        `<td>${ms(v, "rttMs")}</td><td>${v.loss || 0}</td><td>${ms(v, "jitterMs")}</td>` +
+        `<td>${ms(v, "gatherMs")}</td><td>${ms(v, "connectMs")}</td>`;
+      tbody.appendChild(tr);
+    }
   }
 
   startBtn.onclick = () => {
     hostErr.textContent = "";
+    const src = document.getElementById("srcSel").value;
     ws.send(JSON.stringify({
       type: "cmd", cmd: "start",
       params: {
         bitrate: parseInt(document.getElementById("brInput").value, 10),
         fps: parseInt(document.getElementById("fpsInput").value, 10),
+        monitor: src === "test" ? 0 : parseInt(src || "0", 10),
+        source: src === "test" ? "test" : "",
       },
     }));
   };
