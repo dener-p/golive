@@ -313,6 +313,8 @@ Single encode → ~10 viewers (done)          ← soak: 10/10 viewers, media flo
         ↓
 Direct-P2P diagnostics + NAT test mode (done)   ← tools/webrtc-check + matrix/ ledger incl. real cross-network NO
         ↓
+M6: trickle + failure diagnostics (done)      ← probe trickles like browser; failures explain why (candidate histograms + verdict); validated on real notebook CGNAT cell 2026-09-25
+        ↓
 Printed-key identity / anonymous viewers / UX polish (done)
         ↓
 Discord OAuth (hosts)        ← last item, first candidate for v2
