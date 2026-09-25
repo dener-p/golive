@@ -86,6 +86,12 @@ with real network sockets, real code, and the real binaries (no mocks):
 5. Three simultaneous viewers (pion stand-ins) against one room: one encoder instance,
    three independent `PeerConnection`s, all receiving packets — the "encode once, fan out
    N ways" design holds.
+6. **Encoder tuning pass**: the AMF pipeline now runs `usage=low-latency rate-control=lcvbr
+   bitrate=<target> max-bitrate=<target>`, keyframe interval is user-tunable (1/2/4 s in the
+   host UI), and the fallback SVT path got `max-bitrate` + verified. Round-trips were
+   checked by decoding the encoder's own output back (`amfav1enc → av1parse → dav1ddec`):
+   the live 1080p screen decodes to real, detailed frames (confirmed by pixel content of the
+   decoded PNGs), and the bitrate matrix above was measured on-wire per config.
 
 ```
 2026/09/25 viewer v1: connected via direct prflx (local host fdfd::1aba:db37:55921 <-> remote prflx fdfd::1aba:db37:55945)
@@ -97,6 +103,39 @@ What I still cannot verify here: an actual browser tab decoding AV1 via WebCodec
 (loopback always connects). For NAT testing, `tools/webrtc-check` is the stand-in viewer —
 run the helper on one network and the check tool on another and compare the `direct=`
 result (see "Development tools" below).
+
+## Encoder defaults & tuning (measured on the RX 9060 XT)
+
+The helper ships tuned live-streaming defaults and the tuning knobs the pass used:
+
+- `-rc` — AMF rate-control: `default | cqp | lcvbr | vbr | cbr` (default `lcvbr`)
+- `-usage` — AMF usage: `low-latency | transcoding` (default `low-latency`)
+- Keyframe interval is a host-UI control (1/2/4 s), relayed as `params.gop` → `GOP = fps × sec`
+
+Measured end-to-end (helper → RTP → `tools/webrtc-check`, 1080p30 @ "4000 kbit/s", 1 s keyframes):
+
+| content | AMF lcvbr + low-latency (default) | AMF cbr | AMF vbr / cbr+transcoding | SVT preset 10 |
+|---|---|---|---|---|
+| real desktop (mostly static UI) | ~0.7 Mbps, briefly ~3.8 on busy UI | — | — | — |
+| moving-ball test pattern | ~120 kbps | ~121 kbps | ~115–121 kbps | — |
+| random noise ("snow") stress | ~20–29 Mbps | ~20–23 Mbps | ~20–23 Mbps | ~13.5–18 Mbps (~2.5 CPU cores) |
+
+Keyframes landed at the configured 1/s interval in every configuration. What this says
+(and the honest caveat that goes with it):
+
+- **Static/desktop screens are cheap.** The default `lcvbr` mode sits far below the target
+  on real desktop content, so the host UI's "bitrate × viewers" upload estimate is an upper
+  bound in practice — the encoder does not pad static scenes with filler (the "undershoot"
+  seen earlier is content-driven, not a bug).
+- **On this AMF driver the bitrate target is a quality hint, not a hard cap.** Every
+  rate-control mode blew past "4000 kbit/s" to ~20 Mbps on a random-noise stress pattern
+  (SVT overshoots less, ~13.5–18 Mbps, at real CPU cost). For real desktop use this is an
+  edge case — the worst thing measured on the actual screen was ~3.8 Mbps — but streaming
+  genuinely busy content (fast fullscreen video/games) through this build needs an upload
+  budget: lower FPS (host UI) or `-rc`/resolution.
+- `usage=low-latency` works on this driver and is the default. `-rc default -usage transcoding`
+  reproduces the old behavior rate-for-rate on the same content (the RC knob is a hint, not
+  the thing that kept rates low).
 
 ## Development tools
 

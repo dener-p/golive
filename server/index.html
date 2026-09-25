@@ -106,6 +106,12 @@
         <input id="brInput" type="number" value="4000" min="500" max="20000" step="500" style="width:90px"> kbit/s
         <label>FPS</label>
         <input id="fpsInput" type="number" value="30" min="5" max="60" style="width:70px">
+        <label>Keyframe</label>
+        <select id="gopSel" title="Keyframe interval: how often viewers can join/resync; shorter = snappier join, longer = lower bitrate">
+          <option value="1" selected>1 s</option>
+          <option value="2">2 s</option>
+          <option value="4">4 s</option>
+        </select>
       </div>
       <div class="row">
         <button id="startBtn">Start streaming</button>
@@ -393,6 +399,7 @@ function runHost() {
       params: {
         bitrate: parseInt(document.getElementById("brInput").value, 10),
         fps: parseInt(document.getElementById("fpsInput").value, 10),
+        gop: parseInt(document.getElementById("gopSel").value, 10),
         monitor: src === "test" ? 0 : parseInt(src || "0", 10),
         source: src === "test" ? "test" : "",
       },

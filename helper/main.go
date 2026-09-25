@@ -94,6 +94,8 @@ func main() {
 		fps       = flag.Int("fps", 30, "default framerate")
 		source    = flag.String("source", "", `capture source: "" = screen, "test" = test pattern, or a raw GStreamer source fragment`)
 		autostart = flag.Bool("autostart", false, "start streaming as soon as connected")
+		rc        = flag.String("rc", "lcvbr", "amf rate control: default | cqp | lcvbr | vbr | cbr")
+		usage     = flag.String("usage", "low-latency", "amf usage: low-latency | transcoding")
 	)
 	flag.Parse()
 
@@ -101,7 +103,8 @@ func main() {
 	h := &helper{
 		server: strings.NewReplacer("http://", "ws://", "https://", "wss://").Replace(strings.TrimRight(*server, "/")),
 		room:   r, key: k,
-		defaults: captureOpts{Source: *source, Encoder: *enc, Bitrate: *kbps, FPS: *fps},
+		defaults: captureOpts{Source: *source, Encoder: *enc, Bitrate: *kbps, FPS: *fps,
+			RateControl: *rc, Usage: *usage},
 		peers:    map[string]*peer{},
 		pkt:      packetizer{seq: uint16(time.Now().UnixNano()), maxPayload: 1100},
 		t0:       time.Now(),
@@ -219,6 +222,7 @@ func (h *helper) session() error {
 			Params struct {
 				Bitrate int    `json:"bitrate"`
 				FPS     int    `json:"fps"`
+				Gop     int    `json:"gop"` // keyframe interval in seconds (0 = default 1s)
 				Monitor int    `json:"monitor"`
 				Source  string `json:"source"` // "" = screen, "test" = test pattern
 			} `json:"params"`
@@ -245,6 +249,9 @@ func (h *helper) session() error {
 				}
 				if m.Params.Source != "" {
 					o.Source = m.Params.Source
+				}
+				if m.Params.Gop > 0 {
+					o.GOP = o.FPS * m.Params.Gop // seconds -> frames
 				}
 				o.Monitor = m.Params.Monitor
 				go h.start(o)

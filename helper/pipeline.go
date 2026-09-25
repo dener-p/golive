@@ -19,12 +19,14 @@ import (
 )
 
 type captureOpts struct {
-	Source  string // "" = screen, "test" = test pattern, anything else = raw gst fragment
-	Encoder string // auto | svt | nv | qsv | va | amf
-	Bitrate int    // kbit/s
-	FPS     int
-	GOP     int // keyframe interval in frames
-	Monitor int // Windows only
+	Source      string // "" = screen, "test" = test pattern, anything else = raw gst fragment
+	Encoder     string // auto | svt | nv | qsv | va | amf
+	Bitrate     int    // kbit/s
+	FPS         int
+	GOP         int // keyframe interval in frames
+	Monitor     int  // Windows only
+	RateControl string // amf: default | cqp | lcvbr | vbr | cbr ("default" = vendor default, no cap)
+	Usage       string // amf: low-latency | transcoding
 }
 
 type capture struct {
@@ -48,8 +50,21 @@ func (c *capture) Stop() {
 	})
 }
 
-// name -> encoder element. Software first in the table is NOT the order tried; see candidates().
-func encoderElement(name string, kbps, gop int) (element string, raw string) {
+// name -> encoder element. Tuned for live/real-time use, per encoder:
+//
+//   amf  usage=low-latency                     -> live mode on AMD
+//        rate-control=lcvbr max-bitrate=target -> Latency-Constrained VBR capped at the
+//                 configured bitrate: predictable upload ceiling (host UI's "bitrate x
+//                 viewers" estimate stays valid) with no filler waste on static scenes
+//                 (plain CBR pads static screens up to the target, wasting viewer
+//                 bandwidth). Verified against the target behavior with gst + webrtc-check.
+//   svt  preset=10 (fast software), CBR/VBR via target-bitrate+max-bitrate, IDR keyframes,
+//        zero lookahead + minimal reference structure for low encode latency
+//
+// nv/qsv/va are best-known configs only — no hardware here to validate them, so keep the
+// strings simple and rely on haveElement() probing before use.
+func encoderElement(o captureOpts, name string) (element string, raw string) {
+	kbps, gop := o.Bitrate, o.GOP
 	switch name {
 	case "nv":
 		return fmt.Sprintf("nvav1enc bitrate=%d gop-size=%d", kbps, gop), "NV12"
@@ -58,10 +73,23 @@ func encoderElement(name string, kbps, gop int) (element string, raw string) {
 	case "va":
 		return fmt.Sprintf("vaav1enc bitrate=%d key-int-max=%d", kbps, gop), "NV12"
 	case "amf":
-		return fmt.Sprintf("amfav1enc bitrate=%d gop-size=%d", kbps, gop), "NV12"
-	default: // svt: software, low-delay, CBR-ish
-		return fmt.Sprintf("svtav1enc preset=10 target-bitrate=%d intra-period-length=%d intra-refresh-type=2 "+
-			"parameters-string=lookahead=0:pred-struct=1", kbps, gop), "I420"
+		// Live mode on AMD: low-latency usage; rate-control from o.RateControl.
+		// For any non-"default" RC we also pin max-bitrate to the target so the upload
+		// ceiling is exactly what the host UI estimated. (Plain CBR would pad static
+		// scenes with filler; "vbr"/"lcvbr" dip below target and only cap at it.)
+		rc := o.RateControl
+		if rc == "" {
+			rc = "lcvbr"
+		}
+		if rc == "default" {
+			return fmt.Sprintf("amfav1enc usage=%s bitrate=%d gop-size=%d", o.Usage, kbps, gop), "NV12"
+		}
+		return fmt.Sprintf("amfav1enc usage=%s rate-control=%s "+
+			"bitrate=%d max-bitrate=%d gop-size=%d", o.Usage, rc, kbps, kbps, gop), "NV12"
+	default: // svt: software fallback, low-latency software preset
+		return fmt.Sprintf("svtav1enc preset=10 target-bitrate=%d max-bitrate=%d "+
+			"intra-period-length=%d intra-refresh-type=2 "+
+			"parameters-string=lookahead=0:pred-struct=1", kbps, kbps, gop), "I420"
 	}
 }
 
@@ -105,7 +133,7 @@ func sourceElement(o captureOpts) string {
 }
 
 func buildPipeline(o captureOpts, enc string, port int) string {
-	el, raw := encoderElement(enc, o.Bitrate, o.GOP)
+	el, raw := encoderElement(o, enc)
 	return fmt.Sprintf("%s ! queue max-size-buffers=2 leaky=downstream ! videoconvert ! videorate ! "+
 		"video/x-raw,format=%s,framerate=%d/1 ! %s ! av1parse ! "+
 		"video/x-av1,stream-format=obu-stream,alignment=tu ! tcpclientsink host=127.0.0.1 port=%d",

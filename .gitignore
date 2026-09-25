@@ -16,3 +16,4 @@ helper/golive-helper
 # OS junk
 Thumbs.db
 Desktop.ini
+*.obu
