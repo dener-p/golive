@@ -93,9 +93,12 @@ live Turso DB by `go test ./server -run TestStore` (both backends round-trip
 saveHostKey/claim/owner/session; the Turso test cleans up its own rows and skips when the
 env vars are absent).
 
-## 6. What's not done yet (on this branch)
+## 6. Status & v2 follow-ups (as of 2026-09-25)
 
-- The final browser click-through (claim + keyless control) — everything up to the Discord
-  redirect is verified; the authorize/consent round trip needs a human in a browser.
+The **claim was completed live**: room `2ea81f3707` is bound to the user's Discord account,
+persisted to Turso and verified by a direct read. The roadmap's last item is done on this
+branch. Follow-ups are v2 candidates:
+
 - Ownership transfer / release; room unclaim.
-- Avatar rendering on the host panel (identity line shows the account name only).
+- Avatar rendering in the host-panel identity line (shows the account name only today).
+- Branch decision: merge to main, or keep this as the v2 opener lane.

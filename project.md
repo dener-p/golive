@@ -319,7 +319,8 @@ M7: NAT regression suite (done)               ← matrix/suite.ps1: loopback+tun
         ↓
 Printed-key identity / anonymous viewers / UX polish (done)
         ↓
-Discord OAuth (hosts)        ← last item; WIP on branch feature/discord-oauth (claim + owner via SQLite, e2e pending app creds)
+↓
+Discord OAuth (hosts)        ← DONE on branch feature/discord-oauth (claim + owner via Turso, validated live 2026-09-25)
         ↓
 [v2/v3] Host-provided TURN recovery
 ```
@@ -478,6 +479,15 @@ Account-based host gate that replaces the printed key (M5.5 / roadmap last item)
   claim room `2ea81f3707`. Everything up to the Discord redirect is verified on the live
   stack (Turso-backed, oauth enabled). Owner transfer/avatar listed as follow-ups in
   DISCORD-AUTH.md.
+
+**M8 validation (2026-09-25):** ✅
+
+- User claimed room `2ea81f3707` through the live public stack; ownership persisted to
+  Turso (`owner=<discord id>`, `claimed_at` set, host_key retained) — verified by a direct
+  Turso read. The last roadmap item is complete on `feature/discord-oauth`.
+- Follow-ups parked in DISCORD-AUTH.md (v2 candidates): ownership transfer/unclaim,
+  avatar in the host-panel identity line, and the branch decision (merge to main vs keep
+  as the v2 opener lane).
 
 1. Add a host/viewer diagnostics panel showing the final transport path:
    `direct host`, `direct srflx`, `direct prflx`, or `TURN relay` (the last only exists from v2).
