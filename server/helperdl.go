@@ -64,13 +64,13 @@ func handleHelperLatest(w http.ResponseWriter, _ *http.Request) {
 }
 
 // GET /api/helper/download — redirect to the current installer artifact.
-func handleHelperDownload(w http.ResponseWriter, _ *http.Request) {
+func handleHelperDownload(w http.ResponseWriter, r *http.Request) {
 	f, _ := helperMeta()["file"].(string)
 	if f == "" || helperStaticDir() == "" {
 		http.Error(w, "no published helper build yet — run packaging/build-bundle.ps1", 404)
 		return
 	}
-	http.Redirect(w, nil, "/helper/"+f, http.StatusFound)
+	http.Redirect(w, r, "/helper/"+f, http.StatusFound)
 }
 
 // register helper static files (safe: only when the dir exists).
