@@ -315,6 +315,8 @@ Direct-P2P diagnostics + NAT test mode (done)   ← tools/webrtc-check + matrix/
         ↓
 M6: trickle + failure diagnostics (done)      ← probe trickles like browser; failures explain why (candidate histograms + verdict); validated on real notebook CGNAT cell 2026-09-25
         ↓
+M7: NAT regression suite (done)               ← matrix/suite.ps1: loopback+tunnel+no-stun+soak cells, commit-tagged SUITE-RESULTS.md, baseline 4/4 PASS
+        ↓
 Printed-key identity / anonymous viewers / UX polish (done)
         ↓
 Discord OAuth (hosts)        ← last item, first candidate for v2
@@ -431,6 +433,23 @@ v2 the recovery path is host-provided TURN; in v1 it is a clear terminal error.
 
 Turn the diagnostics from Milestone 6 into a repeatable test suite so future networking changes
 do not silently reduce connectivity.
+
+**M7 progress (2026-09-25):**
+
+- 1 transport-path panel ✅ — viewer badge now reads `direct host` / `direct srflx` / `direct
+  prflx` (parens dropped); host viewers table gained an ICE **check** column alongside gather
+  and connect (≡ offer→connected).
+- 2 recorded metrics ✅ — gather/check/connect timings, selected pair, RTT, loss, jitter,
+  bitrate, first-frame, and disconnect reason were already captured (M6); checkMs now also
+  surfaced on the host page.
+- 3 anonymized results ✅ — `webrtc-check -anon` strips addresses/ports and keeps only
+  candidate types + counts for sharing. No telemetry is collected (v1 stays local).
+- 4 **regression suite** ✅ — `matrix/suite.ps1`: loopback, tunnel, `-no-stun` and optional
+  5-viewer soak cells, each asserting direct/ICE/srflx + RTP>0; appends one row per run to
+  `matrix/SUITE-RESULTS.md` tagged with the git commit under test. Baseline 2026-09-25: 4/4
+  PASS. Run after any networking change; exit 0 only when nothing regressed.
+- 5 hidden-relay visibility ✅ — v1 has no relay by construction; every path is labeled
+  `direct …` and failures produce the explaining diagnostic.
 
 1. Add a host/viewer diagnostics panel showing the final transport path:
    `direct host`, `direct srflx`, `direct prflx`, or `TURN relay` (the last only exists from v2).

@@ -140,7 +140,7 @@
       <table class="vtable">
         <thead><tr>
           <th>id</th><th>state</th><th>path</th><th>rtt</th><th>lost</th><th>jitter</th>
-          <th>gather</th><th>connect</th><th>reason / candidates</th>
+          <th>gather</th><th>check</th><th>connect</th><th>reason / candidates</th>
         </tr></thead>
         <tbody id="viewersTbody"></tbody>
       </table>
@@ -333,7 +333,7 @@ function runViewer() {
           if (local && remote) {
             const relay = local.candidateType === "relay" || remote.candidateType === "relay";
             pathBadge.style.display = "inline-flex";
-            pathBadge.textContent = relay ? "via TURN relay" : "direct (" + local.candidateType + ")";
+            pathBadge.textContent = relay ? "via TURN relay" : "direct " + local.candidateType;
           }
         }
       });
@@ -463,7 +463,7 @@ function runHost() {
       tr.innerHTML =
         `<td>${esc(v.id)}</td><td>${esc(v.state)}</td><td>${esc(v.path)}</td>` +
         `<td>${ms(v, "rttMs")}</td><td>${v.loss || 0}</td><td>${ms(v, "jitterMs")}</td>` +
-        `<td>${ms(v, "gatherMs")}</td><td>${ms(v, "connectMs")}</td>` +
+        `<td>${ms(v, "gatherMs")}</td><td>${ms(v, "checkMs")}</td><td>${ms(v, "connectMs")}</td>` +
         `<td>${esc((v.state === "failed" ? v.reason + " " : "") + (v.cands || ""))}</td>`;
       tbody.appendChild(tr);
     }

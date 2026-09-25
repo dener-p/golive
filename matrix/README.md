@@ -1,8 +1,9 @@
 # NAT test matrix — procedure
 
 The one thing v1 hasn't proven is **direct P2P across two real networks**. Everything so
-far was loopback/LAN. This folder makes that test repeatable so we can fill the matrix and
-eventually seed the M7 regression suite.
+far was loopback/LAN. This folder makes that test repeatable so we can fill the matrix —
+and `suite.ps1` turns the known cells into the **M7 regression suite** that runs after any
+networking change.
 
 ## Mental model
 
@@ -67,6 +68,26 @@ self-explanatory without checking the helper's log.
 
 `run.ps1` parses the JSON result and appends a row to `RESULTS.md`. A `NO` (non-zero
 exit) row is still appended — failures are data.
+
+## Regression suite (M7) — run after any networking change
+
+`suite.ps1` repeats the known-good cells against a streaming helper and fails loudly on any
+regression. Cells: **loopback** (localhost, expect direct + srflx), **tunnel** (public URL,
+expect direct), **no-stun** (`-no-stun` probe, expect srflx *not* learned but LAN host path
+still direct), and with `-Soak` a 5-viewer soak (all must receive RTP). Every cell asserts
+direct/ICE/srflx and RTP>0.
+
+```powershell
+.\matrix\suite.ps1 -Server https://golive.puhl.dev -Room <room> -Seconds 6 -Soak
+```
+
+Each run appends one row to `matrix/SUITE-RESULTS.md` with the git commit under test, so a
+regression appears as a `FAIL` next to the commit that introduced it. Run it from the helper
+side whenever you change STUN servers, ICE config, candidate handling, the encoder, or the
+host's router/NAT setup. Exit code 0 = all cells passed.
+
+The probe also prints an **anonymized** RESULT (`-anon`): addresses/ports stripped, candidate
+types + counts kept — safe to share without leaking the network topology.
 
 ## What to test (work up the difficulty ladder)
 

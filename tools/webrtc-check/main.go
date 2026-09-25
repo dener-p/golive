@@ -40,6 +40,7 @@ func main() {
 	jsonOut := flag.Bool("json", false, "print RESULT as a single JSON line (what matrix/run.ps1 parses)")
 	verbose := flag.Bool("verbose", false, "print gathered local candidates and the selected pair")
 	noStun := flag.Bool("no-stun", false, "simulate a UDP-restricted network: gather host candidates only (no STUN)")
+	anon := flag.Bool("anon", false, "anonymize RESULT before printing (strip addresses, keep types + counts)")
 	flag.Parse()
 	if *room == "" {
 		log.Fatal("-room is required")
@@ -146,7 +147,7 @@ func main() {
 			"stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478",
 		}}}
 	} else {
-		log.Printf("no-stun: gathering host candidates only (simulating a UDP-restricted network)")
+		fmt.Println("no-stun: gathering host candidates only (simulating a UDP-restricted network)")
 	}
 	pc, err := api.NewPeerConnection(webrtc.Configuration{
 		ICEServers:         iceServers,
@@ -304,6 +305,9 @@ func main() {
 		Duration:       dur,
 		PPS:            float64(pkts.Load()) / dur,
 	}
+	if *anon {
+		r = r.anon()
+	}
 	if *jsonOut {
 		b, _ := json.Marshal(r)
 		fmt.Printf("RESULT %s\n", b)
@@ -456,4 +460,23 @@ type result struct {
 	Bytes          int64    `json:"bytes"`
 	Duration       float64  `json:"duration"`
 	PPS            float64  `json:"pps"`
+}
+
+// anon removes network-identifying detail for safe sharing: any IP addresses,
+// ports and the selected pair's addressing are stripped; types and counts stay
+// (they are the diagnostics that matter). Room id is kept (it is a random token).
+func (r result) anon() result {
+	if p := strings.Fields(r.Path); len(p) >= 5 {
+		r.Path = p[0] + " <-> " + p[3]
+	}
+	r.Local, r.Remote = "", ""
+	lc := make([]string, 0, len(r.LocalCandidate))
+	for _, c := range r.LocalCandidate {
+		if i := strings.IndexByte(c, ' '); i >= 0 {
+			c = c[:i]
+		}
+		lc = append(lc, c)
+	}
+	r.LocalCandidate = lc
+	return r
 }
