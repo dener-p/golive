@@ -580,7 +580,8 @@ The printed key stays, but it stops being something a public host has to handle.
 **System tray** (`-tray`, Windows; `getlantern/systray`, message loop on the main goroutine):
 
 - Menu: Open host page, Copy viewer link, a live **pairing-code** line (disabled label), New
-  pairing code, Start/Stop streaming, Quit.
+  pairing code, a single **Start/Stop toggle** that mirrors the real streaming state every
+  second (idempotent against host-page/autostart/pipeline-death), Quit.
 - Console mode (`-tray` off) is unchanged for dev — logs stay visible. The packaged build
   is linked as a **GUI subsystem** (`-H=windowsgui`): no console window at all, zero flash.
   The tray **auto-enables when no console is attached**, so even a bare double-click of the

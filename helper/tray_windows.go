@@ -12,6 +12,7 @@ import (
 	_ "image/png" // register the PNG decoder for image.DecodeConfig below
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/getlantern/systray"
 )
@@ -43,11 +44,23 @@ func setupTrayMenu(h *helper) {
 	mCode.Disable()
 	mNew := systray.AddMenuItem("New pairing code", "Refresh the code now (it expires after 5 minutes)")
 	systray.AddSeparator()
-	mStart := systray.AddMenuItem("Start streaming", "Screen → AV1 → your viewers")
-	mStop := systray.AddMenuItem("Stop streaming", "End the live stream")
-	mStop.Disable()
+	// One toggle item: its label always mirrors the real streaming state (checked every
+	// second), no matter who started/stopped it — host page, autostart, a dead pipeline.
+	mStream := systray.AddMenuItem("Start streaming", "Screen → AV1 → your viewers")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Exit golive helper")
+
+	updateStreamItem := func() {
+		if h.isStreaming() {
+			mStream.SetTitle("Stop streaming")
+			mStream.SetTooltip("End the live stream")
+		} else {
+			mStream.SetTitle("Start streaming")
+			mStream.SetTooltip("Screen → AV1 → your viewers")
+		}
+	}
+	updateStreamItem()
+	lastState := h.isStreaming()
 
 	onPairCode = func(code string) {
 		if code == "" {
@@ -63,6 +76,8 @@ func setupTrayMenu(h *helper) {
 	}
 
 	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-mOpen.ClickedCh:
@@ -71,17 +86,20 @@ func setupTrayMenu(h *helper) {
 				copyText(viewerURL)
 			case <-mNew.ClickedCh:
 				h.refreshPair()
-			case <-mStart.ClickedCh:
-				mStart.Disable()
-				mStop.Enable()
-				go h.start(h.defaults)
-			case <-mStop.ClickedCh:
-				mStop.Disable()
-				mStart.Enable()
-				go h.stop()
+			case <-mStream.ClickedCh:
+				if h.isStreaming() {
+					go h.stop()
+				} else {
+					go h.start(h.defaults)
+				}
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 				return
+			case <-ticker.C:
+				if s := h.isStreaming(); s != lastState {
+					lastState = s
+					updateStreamItem()
+				}
 			}
 		}
 	}()

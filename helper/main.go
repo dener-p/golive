@@ -348,6 +348,14 @@ func (h *helper) sendToViewer(id string, data any) {
 	h.send(map[string]any{"type": "to-viewer", "viewer": id, "data": data})
 }
 
+// isStreaming reports whether a capture pipeline is currently running — the single source
+// of truth for start/stop UI (host page, tray toggle).
+func (h *helper) isStreaming() bool {
+	h.capMu.Lock()
+	defer h.capMu.Unlock()
+	return h.cap != nil
+}
+
 func (h *helper) sendStatus() {
 	h.capMu.Lock()
 	streaming := h.cap != nil

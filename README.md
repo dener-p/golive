@@ -94,9 +94,10 @@ installed — compiles `golive-setup-<ver>.exe`. Artifacts + `latest.json` are p
 `/api/helper/download`; the landing page at `/` links them.
 
 Once running, the helper (packaged build) lives in the **system tray**: Open host page, Copy
-viewer link, Start/Stop, Quit — and it shows a live **pairing code**. On
-`golive.puhl.dev/host/<room>` a host signs in with Discord and types that code to bind the room
-to their account, no printed key required (see `DISCORD-AUTH.md` §6.1).
+viewer link, a **Start/Stop streaming toggle that always mirrors the real state** (even when a
+start/stop came from the host page or autostart), Quit — and it shows a live **pairing code**.
+On `golive.puhl.dev/host/<room>` a host signs in with Discord and types that code to bind the
+room to their account, no printed key required (see `DISCORD-AUTH.md` §6.1).
 
 The packaged helper is built as a **GUI-subsystem** binary (`-H=windowsgui`): no terminal
 window appears at all (installer already passes `-tray`; a bare double-click auto-enables the
