@@ -527,47 +527,50 @@ than adding another permanent dependency.
 ### Milestone 9 — Distribution and production readiness
 
 Ship the working stream to end users without a dev setup: the operator runs the signaling
-backend on a small always-reachable box (initially the developer's notebook behind a
-`cloudflared` tunnel, per README), and hosts get the helper as a plain download that pairs
-itself.
+backend (golive.puhl.dev via cloudflared; Turso + Discord app), and hosts get the helper as a
+plain download that becomes useful the moment it runs.
 
-Locked-in decisions (general-use scope):
+Decisions (updated 2026-09-25 — **public** audience, agreed with the developer):
 
-- **One operator-hosted instance** for friends/family. A documented self-host path for
-  strangers is stretch, not required.
-- **Helper download is served by the backend** (`/api/helper/download` + `/api/helper/latest`)
-  and surfaced on the host page — no GitHub account needed by end users.
-- **Helper auth**: the host page shows a short code the helper exchanges for a stored
-  long-lived token in `%APPDATA%\golive`. (The current minimal flow keeps the printed room
-  key the helper generates and persists in the same place; pairing replaces the key when this
-  milestone is done.)
-- **TURN stays manual** (static host-provided credentials) for now; that entire area is
-  deferred to v2/v3 anyway. Cloudflare short-lived credential minting is deferred until a
-  real user hits a strict-CGNAT network.
-- **Windows binaries only**; the SmartScreen unsigned-exe warning is accepted and documented
-  for v1.
+- **Audience: public/strangers**, not just friends/family.
+- **Model: one operator-hosted instance.** `wss://golive.puhl.dev/ws` becomes the helper's
+  default `-server`; self-hosting stays a documented power-user path (flag/env), not the
+  default. Viewers still need nothing; the server stays operator-side.
+- **Runtime: bundle GStreamer in the Windows installer** (Inno Setup 6). The helper resolves a
+  sibling `gstreamer/bin` first (the bundled runtime), then PATH. Encoder auto-select already
+  covers other machines: `amf` → `nv/qsv/va` (when those elements exist) → `svt` software.
+- **Downloads served by the backend** (`/api/helper/latest` + `/api/helper/download`), surfaced
+  on a small landing page at `/` — no GitHub account needed by end users.
+- **Code signing: to do** (Azure Trusted Signing or an EV cert — the SmartScreen warning is a
+  real conversion-killer for strangers).
+- **TURN stays deferred** to v2/v3 (unchanged).
 
-1. Release pipeline: tuned `--release` profile (LTO, `codegen-units=1`, `panic=abort`,
-   strip); `tools/release/build.ps1` builds `golive-helper-{version}-windows-x64.exe` and
-   publishes it plus `latest.json` (version, file, sha256) into `server/public/helper/`.
-2. Backend serves the helper: `GET /api/helper/latest` (metadata) and
-   `GET /api/helper/download` (redirect to the versioned file), plus static `/helper/*`.
-3. Host page: with no helper connected, show a download card (version + sha256 + steps);
-   with one connected, compare its hello version to `latest` and hint at updates.
-4. Pairing + token auth: `POST /api/pair` issues a short-lived code; the helper exchanges it
-   (`--pair <code>`) for a long-lived random token (stored hashed); `/ws/helper` accepts
-   `Authorization: Bearer <token>` in addition to the session cookie; the host page shows the
-   pairing code while the helper is offline.
-5. Helper comfort: a system-tray icon (`tray-icon` on a dedicated thread: open host page,
-   start/stop, self-test, quit; live tooltip) and an opt-in "start with Windows" toggle so the
-   helper is always online.
-6. Backend hardening: fail-fast on the default `SESSION_SECRET` unless dev-auth, `GET
-   /healthz`, per-IP rate limits (auth, room create, pair), longer room ids (10 chars).
+1. Helper reachability: default `-server` = `wss://golive.puhl.dev/ws`, with `GOLIVE_SERVER`
+   env + `-server` flag for self-hosted/private instances; localhost still via flag.
+2. Portable GStreamer resolution: the helper looks for `<exe dir>/gstreamer/bin/...` first,
+   then PATH; when running the bundled runtime it adds `--gst-plugin-path` and
+   `--gst-plugin-scanner-path` so the relocated install finds its plugins and scanner.
+3. Packaging:
+   - `packaging/build-bundle.ps1`: builds `golive-helper.exe` (windows/amd64), assembles
+     `dist/golive/` = helper + GStreamer runtime tree + licenses, and zips it as the portable
+     variant.
+   - `packaging/golive.iss` (Inno Setup 6): installs `dist/golive/` into
+     `%LOCALAPPDATA%\Programs\golive`, desktop + start-menu shortcuts to `golive-helper.exe`,
+     uninstaller.
+   - `THIRD-PARTY-NOTICES.md`: GStreamer runtime + gst-plugins-bad (LGPL-2.1), SVT-AV1/dav1d
+     (BSD/Apache), with source/relink notes for LGPL compliance.
+4. Backend: landing page at `/` with install steps; `GET /api/helper/latest` (version, file,
+   sha256) and `GET /api/helper/download` (redirect to the versioned installer in
+   `server/public/helper/`).
+5. First-run: unchanged — the helper prints viewer/host links and owns a console; that console
+   IS the v1 host UI.
 
-**Exit condition:** a non-developer can — on a clean Windows PC — download the helper from the
-host page, run and pair it, start a stream, and have it work on a normal residential network;
-and the operator can rebuild/redeploy the backend and helper without helpers silently losing
-auth.
+**Exit condition:** a stranger on a clean Windows PC with an AV1-capable GPU (or a decent CPU
+for the svt fallback) can install golive from the landing page, run the helper, get a URL, and
+stream to ≤10 viewers on a normal residential network — no terminal, no repo, no dev setup.
+
+Follow-ups explicitly parked outside v1: pairing codes / short-code host auth, tray icon +
+start-with-Windows, helper update hints in the host page, per-IP rate limits + longer room ids.
 
 ## 5.2 Updated implementation priority
 

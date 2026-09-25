@@ -10,7 +10,9 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,8 +25,8 @@ type captureOpts struct {
 	Encoder     string // auto | svt | nv | qsv | va | amf
 	Bitrate     int    // kbit/s
 	FPS         int
-	GOP         int // keyframe interval in frames
-	Monitor     int  // Windows only
+	GOP         int    // keyframe interval in frames
+	Monitor     int    // Windows only
 	RateControl string // amf: default | cqp | lcvbr | vbr | cbr ("default" = vendor default, no cap)
 	Usage       string // amf: low-latency | transcoding
 }
@@ -52,14 +54,14 @@ func (c *capture) Stop() {
 
 // name -> encoder element. Tuned for live/real-time use, per encoder:
 //
-//   amf  usage=low-latency                     -> live mode on AMD
-//        rate-control=lcvbr max-bitrate=target -> Latency-Constrained VBR capped at the
-//                 configured bitrate: predictable upload ceiling (host UI's "bitrate x
-//                 viewers" estimate stays valid) with no filler waste on static scenes
-//                 (plain CBR pads static screens up to the target, wasting viewer
-//                 bandwidth). Verified against the target behavior with gst + webrtc-check.
-//   svt  preset=10 (fast software), CBR/VBR via target-bitrate+max-bitrate, IDR keyframes,
-//        zero lookahead + minimal reference structure for low encode latency
+//	amf  usage=low-latency                     -> live mode on AMD
+//	     rate-control=lcvbr max-bitrate=target -> Latency-Constrained VBR capped at the
+//	              configured bitrate: predictable upload ceiling (host UI's "bitrate x
+//	              viewers" estimate stays valid) with no filler waste on static scenes
+//	              (plain CBR pads static screens up to the target, wasting viewer
+//	              bandwidth). Verified against the target behavior with gst + webrtc-check.
+//	svt  preset=10 (fast software), CBR/VBR via target-bitrate+max-bitrate, IDR keyframes,
+//	     zero lookahead + minimal reference structure for low encode latency
 //
 // nv/qsv/va are best-known configs only — no hardware here to validate them, so keep the
 // strings simple and rely on haveElement() probing before use.
@@ -93,12 +95,54 @@ func encoderElement(o captureOpts, name string) (element string, raw string) {
 	}
 }
 
+// gstBundledPluginPath is set the first time a GStreamer tool is resolved: when a runtime is
+// bundled next to this executable (portable installer: <exe dir>/gstreamer/), tools run from
+// there and get GST_PLUGIN_SYSTEM_PATH/GST_PLUGIN_SCANNER so the relocated install finds its
+// own plugins and scanner instead of a system registry.
+var gstBundledPluginPath string
+
+// gstTool resolves a GStreamer tool (gst-launch-1.0, gst-inspect-1.0): a copy bundled next to
+// this executable wins, otherwise the bare name is returned for PATH lookup.
+func gstTool(tool string) string {
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		plug := filepath.Join(dir, "gstreamer", "lib", "gstreamer-1.0")
+		if st, err := os.Stat(plug); err == nil {
+			if st.IsDir() {
+				gstBundledPluginPath = plug
+			}
+		}
+		p := filepath.Join(dir, "gstreamer", "bin", tool+".exe")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return tool
+}
+
+// gstEnv returns the extra environment for a bundled runtime (plugin dir + scanner);
+// never nil-empty when the sibling gstreamer bundle is present.
+func gstEnv() []string {
+	if gstBundledPluginPath == "" {
+		return nil
+	}
+	root := filepath.Dir(filepath.Dir(gstBundledPluginPath)) // <bundle>/gstreamer
+	return []string{
+		"GST_PLUGIN_SYSTEM_PATH=" + gstBundledPluginPath,
+		"GST_PLUGIN_SCANNER=" + filepath.Join(root, "libexec", "gstreamer-1.0", "gst-plugin-scanner.exe"),
+	}
+}
+
 var gstElementFor = map[string]string{
 	"nv": "nvav1enc", "qsv": "qsvav1enc", "va": "vaav1enc", "amf": "amfav1enc", "svt": "svtav1enc",
 }
 
 func haveElement(el string) bool {
-	return exec.Command("gst-inspect-1.0", el).Run() == nil
+	cmd := exec.Command(gstTool("gst-inspect-1.0"), el)
+	if e := gstEnv(); len(e) > 0 {
+		cmd.Env = append(os.Environ(), e...)
+	}
+	return cmd.Run() == nil
 }
 
 // candidates: hardware encoders that exist on this machine (best first), then software.
@@ -143,7 +187,8 @@ func buildPipeline(o captureOpts, enc string, port int) string {
 // startCapture tries each candidate encoder until one produces a frame. onUnit is called
 // from a single goroutine for every encoded frame; onExit when the pipeline dies.
 func startCapture(o captureOpts, onUnit func([]obu), onExit func(error)) (*capture, error) {
-	if _, err := exec.LookPath("gst-launch-1.0"); err != nil {
+	gst := gstTool("gst-launch-1.0")
+	if _, err := exec.LookPath(gst); err != nil {
 		return nil, fmt.Errorf("gst-launch-1.0 not found in PATH - install GStreamer (see README)")
 	}
 	var errs []string
@@ -166,7 +211,10 @@ func launch(o captureOpts, enc string, onUnit func([]obu), onExit func(error)) (
 	desc := buildPipeline(o, enc, ln.Addr().(*net.TCPAddr).Port)
 	logf("pipeline: gst-launch-1.0 -q %s", desc)
 
-	cmd := exec.Command("gst-launch-1.0", append([]string{"-q"}, strings.Fields(desc)...)...)
+	cmd := exec.Command(gstTool("gst-launch-1.0"), append([]string{"-q"}, strings.Fields(desc)...)...)
+	if e := gstEnv(); len(e) > 0 {
+		cmd.Env = append(os.Environ(), e...)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stderr

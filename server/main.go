@@ -460,13 +460,16 @@ func main() {
 	mux.HandleFunc("/api/owner", handleOwnerInfo)
 	mux.HandleFunc("/watch/", page)
 	mux.HandleFunc("/host/", page)
+	mux.HandleFunc("/api/helper/latest", handleHelperLatest)
+	mux.HandleFunc("/api/helper/download", handleHelperDownload)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.Trim(r.URL.Path, "/") != "" {
 			http.NotFound(w, r)
 			return
 		}
-		page(w, r)
+		landingHandler(w, r)
 	})
+	registerHelperStatic(mux)
 	log.Printf("listening on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }

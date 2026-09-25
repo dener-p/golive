@@ -31,11 +31,11 @@ func enumMonitors() []monitorInfo {
 	cb := syscall.NewCallback(func(hMonitor, hdc, lprc, dwData uintptr) uintptr {
 		// MONITORINFOEXW: cbSize(4) rcMonitor(16) rcWork(16) dwFlags(4) szDevice(64)
 		var mi struct {
-			cbSize   uint32
+			cbSize    uint32
 			rcMonitor [4]int32
-			rcWork   [4]int32
-			dwFlags  uint32
-			szDevice [32]uint16
+			rcWork    [4]int32
+			dwFlags   uint32
+			szDevice  [32]uint16
 		}
 		mi.cbSize = uint32(unsafe.Sizeof(mi))
 		r, _, _ := procGetMonitorInfo.Call(hMonitor, uintptr(unsafe.Pointer(&mi)))

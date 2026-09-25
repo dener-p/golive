@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>golive — direct P2P AV1 streaming</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111316; color: #d6dae0; font: 15px/1.55 system-ui, "Segoe UI", Arial, sans-serif; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 20px 80px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  .tag { color: #8a919c; margin-bottom: 28px; }
+  .panel { background: #1a1d22; border: 1px solid #2b2f36; border-radius: 12px; padding: 20px 24px; margin: 18px 0; }
+  .panel h2 { font-size: 17px; margin: 0 0 10px; }
+  a.btn { display: inline-block; background: #3d88ff; color: #fff; padding: 10px 22px; border-radius: 8px;
+    text-decoration: none; font-weight: 600; margin-top: 6px; }
+  a.btn:hover { background: #2f74e0; }
+  code { background: #23262b; padding: 1px 6px; border-radius: 5px; font-size: 13px; }
+  ol { margin: 6px 0 0; padding-left: 22px; }
+  .muted { color: #8a919c; font-size: 13px; }
+  .warn { color: #f2b02b; font-size: 13px; }
+  .dl { min-height: 46px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>golive</h1>
+  <div class="tag">Let your screen out — direct P2P, AV1, no relay. Viewers just open your link.</div>
+
+  <div class="panel">
+    <h2>Watch</h2>
+    <p class="muted">No install needed. Open a room link in any desktop browser (Chrome/Edge/Firefox).</p>
+  </div>
+
+  <div class="panel">
+    <h2>Host</h2>
+    <p class="muted">You stream straight to each viewer — the server only introduces you. Windows only for v1.</p>
+    <div class="dl" id="dlBox"><span class="muted">checking for the latest build…</span></div>
+    <ol>
+      <li>Run the installer, then launch <b>golive helper</b> (a console window opens).</li>
+      <li>It prints your <b>viewer link</b> and <b>host page</b>. Keep the window open while streaming.</li>
+      <li>Share the viewer link. Pick your screen, press <b>Start streaming</b>.</li>
+    </ol>
+    <p class="muted">Needs Windows with an AV1-capable GPU (AMD Radeon 6000+, NVIDIA RTX 40/50) or a decent CPU
+      (software encoder fallback) and ~4000 kbit/s upload per live viewer.</p>
+  </div>
+
+  <div class="panel">
+    <h2>No middleboxes, no accounts</h2>
+    <p class="muted">Direct WebRTC P2P with plain STUN — v1 deliberately has no relay/TURN, no recording, no SFU,
+      no browser extensions. If a network pair can't connect directly, you'll see
+      <i>“Direct connection failed”</i>. Host identity is bound via a room key you control.</p>
+  </div>
+
+  <p class="muted">Privacy: golive stores your room key and, when you bind a room to it, your Discord identity —
+    nothing else. No data passes through the server beyond signaling.</p>
+</div>
+</div>
+<script>
+// fetch the current release from the same server that served this page
+fetch("/api/helper/latest").then((r) => r.json()).then((m) => {
+  const box = document.getElementById("dlBox");
+  if (m && m.available) {
+    box.innerHTML = `<a class="btn" href="/api/helper/download">Download golive ${m.version} (Windows)</a>` +
+      `<div class="muted">${m.file} &nbsp;·&nbsp; sha256 <code>${m.sha256}</code></div>`;
+  } else {
+    box.innerHTML = `<a class="btn" href="/host">Open the host page instead</a>` +
+      `<div class="muted">(installer build hasn't been published yet)</div>`;
+  }
+}).catch(() => {
+  document.getElementById("dlBox").innerHTML = `<span class="warn">couldn't reach the release endpoint — try the host page directly.</span>`;
+});
+</script>
+</body>
+</html>

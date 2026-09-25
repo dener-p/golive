@@ -38,10 +38,10 @@ var stunServers = []string{
 }
 
 type peer struct {
-	id    string
-	pc    *webrtc.PeerConnection
-	ready chan struct{} // closed once the offer has been sent
-	mu    sync.Mutex
+	id      string
+	pc      *webrtc.PeerConnection
+	ready   chan struct{} // closed once the offer has been sent
+	mu      sync.Mutex
 	sender  *webrtc.RTPSender
 	pending []webrtc.ICECandidateInit
 	hasRem  bool
@@ -89,9 +89,16 @@ type helper struct {
 	kbps   int
 }
 
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 func main() {
 	var (
-		server    = flag.String("server", "ws://localhost:8080", "signaling server base URL (ws:// or wss://, http(s) also accepted)")
+		server    = flag.String("server", envOr("GOLIVE_SERVER", "wss://golive.puhl.dev/ws"), "signaling server base URL (ws:// or wss://, http(s) also accepted); GOLIVE_SERVER env override")
 		room      = flag.String("room", "", "room id (default: generated once and remembered)")
 		key       = flag.String("key", "", "host key (default: generated once and remembered)")
 		enc       = flag.String("encoder", "auto", "auto | svt | nv | qsv | va | amf")
@@ -110,9 +117,9 @@ func main() {
 		room:   r, key: k,
 		defaults: captureOpts{Source: *source, Encoder: *enc, Bitrate: *kbps, FPS: *fps,
 			RateControl: *rc, Usage: *usage},
-		peers:    map[string]*peer{},
-		pkt:      packetizer{seq: uint16(time.Now().UnixNano()), maxPayload: 1100},
-		t0:       time.Now(),
+		peers: map[string]*peer{},
+		pkt:   packetizer{seq: uint16(time.Now().UnixNano()), maxPayload: 1100},
+		t0:    time.Now(),
 	}
 	h.setupWebRTC()
 

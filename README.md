@@ -9,7 +9,8 @@ relay. Everything called out as skippable is skipped:
 - **No TURN.** STUN only. If direct connectivity can't be established, the viewer sees a
   clear error ("Direct connection failed…") instead of silently failing — that's the one
   piece of the TURN-related spec that's cheap to keep and worth keeping.
-- **No Discord OAuth, no pairing codes, no download page, no tray icon.**
+- **No pairing codes, no tray icon.** Host identity is the printed room key + optional
+  Discord OAuth binding (see `DISCORD-AUTH.md`) on the `feature/discord-oauth` branch.
 
 What's real and working end-to-end (tested in this session, see "What I verified" below):
 
@@ -63,6 +64,37 @@ link (from another machine, or another browser profile) to watch. No login for e
 
 `-source` also accepts a raw GStreamer source element/fragment if you want to point it at
 something other than the real screen or the test pattern.
+
+## Distribution to users (v1)
+
+The v1 delivery model is **one operator-hosted server**; viewers need nothing, and hosts get
+a single self-contained Windows download. The helper's default `-server` is the public
+signaling URL (`wss://golive.puhl.dev/ws`), overridable with `-server` or the
+`GOLIVE_SERVER` env var for private/self-hosted instances.
+
+What the helper resolves and bundles (see `helper/pipeline.go`):
+
+- It looks for a GStreamer runtime **next to its own executable** (`<exe>/gstreamer/bin/…`)
+  before falling back to PATH — so the download is fully portable. When the bundled runtime
+  is used it sets `GST_PLUGIN_SYSTEM_PATH` / `GST_PLUGIN_SCANNER` so the relocated install
+  finds its own plugins.
+- Encoder auto-select covers the field: `amfav1enc` (AMD) → `nvav1enc`/`qsvav1enc`/`vaav1enc`
+  (when those elements exist on the machine) → `svtav1enc` (software, any CPU). All AV1.
+
+Packaging (`packaging/`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build-bundle.ps1
+```
+
+This builds the helper, assembles `dist/golive/` = helper + pruned GStreamer runtime + license
+notices, zips a portable build, and — if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is
+installed — compiles `golive-setup-<ver>.exe`. Artifacts + `latest.json` are published to
+`server/public/helper/` (gitignored) and served by the backend at `/api/helper/latest` and
+`/api/helper/download`; the landing page at `/` links them.
+
+Known release to-dos: Windows code-signing (SmartScreen warning otherwise) and publishing the
+installer build on the live server.
 
 ## What I verified
 
