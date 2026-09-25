@@ -107,7 +107,9 @@ at `https://golive.puhl.dev` (tunneled to this box), media stays P2P, and
     .\matrix\run.ps1 -Server https://golive.puhl.dev -Room <room> -Label "B=phone-hotspot-4g" -Key <key>
 
 Rows are appended to `matrix/RESULTS.md`; see `matrix/README.md` for the procedure and
-how to read the rows.
+how to read the rows. Fan-out scaling (M4 exit: single encode through ~10 viewers) is
+exercised with `.\matrix\soak.ps1 -Viewers 10 -Seconds 20` against the live room;
+results land in `matrix/SOAK-RESULTS.md`.
 
 ## Encoder defaults & tuning (measured on the RX 9060 XT)
 
