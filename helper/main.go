@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	randv2 "math/rand/v2"
 	"net/url"
@@ -109,9 +110,22 @@ func main() {
 		autostart = flag.Bool("autostart", false, "start streaming as soon as connected")
 		rc        = flag.String("rc", "lcvbr", "amf rate control: default | cqp | lcvbr | vbr | cbr")
 		usage     = flag.String("usage", "low-latency", "amf usage: low-latency | transcoding")
-		tray      = flag.Bool("tray", false, "run with a system tray icon (open host page, copy link, pairing code, start/stop, quit); off = plain console")
+		tray      = flag.Bool("tray", false, "run with a system tray icon (open host page, copy link, pairing code, start/stop, quit); off = plain console. Auto-enabled when no console is attached (packaged build); logs then go to %APPDATA%\\golive\\helper.log")
 	)
 	flag.Parse()
+
+	// An explicit -tray value always wins. With none given, tray auto-enables when this
+	// process has no console window — the packaged build is linked as a GUI subsystem
+	// (-H=windowsgui) and would otherwise be an invisible process with no UI at all.
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	guiHidden := runtime.GOOS == "windows" && !consoleVisible()
+	if guiHidden || *tray {
+		if f := openLogFile(); f != nil {
+			defer f.Close()
+			log.SetOutput(io.MultiWriter(os.Stderr, f))
+		}
+	}
 
 	r, k := loadIdentity(*room, *key)
 	h := &helper{
@@ -127,18 +141,29 @@ func main() {
 
 	// Tray mode owns the main goroutine (systray needs its message loop there) and boots the
 	// signaling/streaming loop in the background. Console mode boots inline.
-	if *tray && runtime.GOOS == "windows" {
+	if wantTray(*tray, explicit["tray"], !guiHidden) && runtime.GOOS == "windows" {
 		serveTray(h, func() { boot(h, *autostart) })
 		return
 	}
 	boot(h, *autostart)
 }
 
+// wantTray decides whether tray mode is active. An explicit -tray flag wins; without one,
+// tray is the default whenever no console is attached (the packaged GUI build), so a bare
+// double-click of the exe still presents the tray UI.
+func wantTray(flagVal, explicit, hasConsole bool) bool {
+	if explicit {
+		return flagVal
+	}
+	return !hasConsole
+}
+
 // boot runs everything the helper does once identity + WebRTC are ready: print the link,
 // start the pairing-code refresh, the stats loop, autostart, and the reconnect loop.
 func boot(h *helper, autostart bool) {
 	httpBase := strings.NewReplacer("ws://", "http://", "wss://", "https://").Replace(h.server)
-	fmt.Printf("\n  Viewer link : %s/watch/%s\n  Host page   : %s/host/%s?key=%s\n\n", httpBase, h.room, httpBase, h.room, h.key)
+	logf("viewer link: %s/watch/%s", httpBase, h.room)
+	logf("host page : %s/host/%s?key=%s", httpBase, h.room, h.key)
 
 	h.startPairRefresh()
 	go h.statsLoop()

@@ -40,3 +40,36 @@ func TestHandleHelperDownloadRedirects(t *testing.T) {
 		t.Fatalf("Location = %q", loc)
 	}
 }
+
+// Download artifacts must never be cacheable: Cloudflare's default static TTL is 4h and a
+// stale same-name build was served to real downloads after a rebuild. The /helper/ handler
+// must answer "no-store" so the edge always revalidates.
+func TestHelperStaticIsNoStore(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(dir, "public", "helper"), 0o755)
+	if err := os.WriteFile(filepath.Join(dir, "public", "helper", "golive-test.zip"),
+		[]byte("zip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerHelperStatic(mux)
+	req := httptest.NewRequest("GET", "/helper/golive-test.zip", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
+	}
+}

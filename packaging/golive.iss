@@ -13,7 +13,10 @@ DefaultDirName={localappdata}\Programs\golive
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir={#Output}
-OutputBaseFilename=golive-setup-{#Version}
+#ifndef Stamp
+  #define Stamp "dev"
+#endif
+OutputBaseFilename=golive-setup-{#Version}-{#Stamp}
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible

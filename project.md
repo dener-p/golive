@@ -581,9 +581,12 @@ The printed key stays, but it stops being something a public host has to handle.
 
 - Menu: Open host page, Copy viewer link, a live **pairing-code** line (disabled label), New
   pairing code, Start/Stop streaming, Quit.
-- Console mode (`-tray` off, the default) is unchanged — dev logs stay visible. Packaged
-  builds launch with `-tray` (installer shortcuts + a **Start-with-Windows** task). The tray
-  icon is rendered at runtime (PNG → ICO wrapper) — no binary asset to ship.
+- Console mode (`-tray` off) is unchanged for dev — logs stay visible. The packaged build
+  is linked as a **GUI subsystem** (`-H=windowsgui`): no console window at all, zero flash.
+  The tray **auto-enables when no console is attached**, so even a bare double-click of the
+  exe presents the tray. All helper output — the viewer/host links, the pairing-code line,
+  stream events — appends to `%APPDATA%\golive\helper.log` when the console isn't there. The
+  tray icon is rendered at runtime (PNG → ICO wrapper) — no binary asset to ship.
 
 **Short-code pairing** (replaces printed-key onboarding for public users):
 
@@ -602,7 +605,7 @@ golive.puhl.dev/host, sign in with Discord, type the code, and the host page con
 room without the user ever seeing a key.
 
 Follow-ups parked: helper update hints in the host page, per-IP rate limits + longer room ids,
-windowsgui subsystem (no console flash) + log file for the packaged helper.
+log-file rotation for `helper.log`.
 
 ## 5.2 Updated implementation priority
 

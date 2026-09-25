@@ -80,5 +80,12 @@ func registerHelperStatic(mux *http.ServeMux) {
 		return
 	}
 	log.Printf("serving helper downloads from %s", dir)
-	mux.Handle("/helper/", http.StripPrefix("/helper/", http.FileServer(http.Dir(dir))))
+	fs := http.StripPrefix("/helper/", http.FileServer(http.Dir(dir)))
+	// Artifacts are large; every build is published under a new content-addressed name.
+	// Never let any layer cache a /helper/ response — a stale same-name copy was served
+	// to real downloads for hours after a rebuild (Cloudflare default static TTL).
+	mux.Handle("/helper/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		fs.ServeHTTP(w, r)
+	}))
 }

@@ -26,9 +26,12 @@ foreach ($cand in @(
 if (-not $gstRoot) { throw "GStreamer runtime not found. Install it or pass a path via -GstRoot." }
 
 # --- 1. build the helper (windows/amd64) ---
+# -H=windowsgui links the helper as a GUI-subsystem app: Windows creates no console window
+# at all (zero flash), the tray auto-enables (no console => main() defaults to tray), and
+# logs go to %APPDATA%\golive\helper.log. Dev builds without the flag stay console apps.
 $env:GOOS = "windows"; $env:GOARCH = "amd64"; $env:CGO_ENABLED = "0"
 try {
-    go build -ldflags "-s -w" -o (Join-Path $root "dist\golive\golive-helper.exe") (Join-Path $root "helper")
+    go build -ldflags "-s -w -H=windowsgui" -o (Join-Path $root "dist\golive\golive-helper.exe") (Join-Path $root "helper")
 } finally {
     Remove-Item Env:GOOS -ErrorAction SilentlyContinue
     Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
@@ -84,19 +87,26 @@ Write-Host "bundled plugin DLLs: $($copied.Count) ($($copied.Keys -join ', '))"
 Copy-Item (Join-Path $PSScriptRoot "THIRD-PARTY-NOTICES.md") (Join-Path $dist "THIRD-PARTY-NOTICES.md") -Force
 
 # --- 4. portable zip ---
-$zipName = "golive-$version-windows-x64-portable.zip"
+# Artifact names embed an 8-char hash of the zip contents, so EVERY rebuild produces a
+# fresh URL. Without this, Cloudflare's edge cache serves a stale copy of a previous
+# same-version build for up to 4h (its default static TTL) — a real incident we hit live.
+$stampName = "golive-tmp-$version.zip"
+$stampPath = Join-Path $root "dist\$stampName"
+if (Test-Path $stampPath) { Remove-Item $stampPath -Force }
+Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $stampPath -CompressionLevel Optimal
+$zipHash = (Get-FileHash $stampPath -Algorithm SHA256).Hash.ToLower()
+$stamp = $zipHash.Substring(0, 8)
+$zipName = "golive-$version-$stamp-windows-x64-portable.zip"
 $zipPath = Join-Path $root "dist\$zipName"
-if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zipPath -CompressionLevel Optimal
-$zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
+Move-Item $stampPath $zipPath -Force
 Write-Host "portable zip: $zipPath ($zipHash)"
 
 # --- 5. installer (if Inno Setup 6 present) + publish to server/public/helper ---
-$setupName = "golive-setup-$version.exe"
+$setupName = "golive-setup-$version-$stamp.exe"
 $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 $setupPath = $null
 if (Test-Path $iscc) {
-    & $iscc (Join-Path $PSScriptRoot "golive.iss") "/DVersion=$version" "/DOutput=$root\dist"
+    & $iscc (Join-Path $PSScriptRoot "golive.iss") "/DVersion=$version" "/DStamp=$stamp" "/DOutput=$root\dist"
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
     $setupPath = Join-Path $root "dist\$setupName"
 } else {
@@ -120,6 +130,10 @@ $latest = @{
     sha256  = $hashVal
     note    = $note
 }
+# stale artifacts from earlier builds (same version, different hash) are no longer
+# advertised — remove them so /helper/* only ever serves the current build.
+Get-ChildItem $pubDir -Filter "golive-*.zip" | Where-Object { $_.Name -ne $zipName } | Remove-Item -Force
+Get-ChildItem $pubDir -Filter "golive-setup-*.exe" | Where-Object { $_.Name -ne $setupName } | Remove-Item -Force
 ($latest | ConvertTo-Json -Compress) | Set-Content (Join-Path $root "server\public\helper\latest.json") -Encoding utf8
 Write-Host "published: server/public/helper/latest.json -> $($latest | ConvertTo-Json -Compress)"
 Write-Host "bundle complete. Plugins needed by helper: $elements"
