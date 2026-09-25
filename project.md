@@ -319,7 +319,7 @@ M7: NAT regression suite (done)               ← matrix/suite.ps1: loopback+tun
         ↓
 Printed-key identity / anonymous viewers / UX polish (done)
         ↓
-Discord OAuth (hosts)        ← last item, first candidate for v2
+Discord OAuth (hosts)        ← last item; WIP on branch feature/discord-oauth (claim + owner via SQLite, e2e pending app creds)
         ↓
 [v2/v3] Host-provided TURN recovery
 ```
@@ -450,6 +450,32 @@ do not silently reduce connectivity.
   PASS. Run after any networking change; exit 0 only when nothing regressed.
 - 5 hidden-relay visibility ✅ — v1 has no relay by construction; every path is labeled
   `direct …` and failures produce the explaining diagnostic.
+
+### M8 — Discord OAuth (hosts) — in progress on `feature/discord-oauth`
+
+Account-based host gate that replaces the printed key (M5.5 / roadmap last item):
+
+- OAuth flow ✅ — `/auth/discord/login` → Discord authorize (scope `identify`) → callback
+  exchanges the code, loads `/users/@me`, issues an HttpOnly session cookie (12 h,
+  SameSite=Lax, Secure on https). Single-use `state` nonce (10 min) carries
+  `{room, key}` server-side.
+- Account → room ownership ✅ — the printed key is the one-time *claim* credential:
+  first Discord user who signs in while holding the key binds the room (`rooms.owner`).
+  Afterwards the owner controls the room keyless from the public host page; the WS host
+  gate accepts key **or** owner session. Non-owners get `?denied=1`, missing key
+  `?unclaimed=1`.
+- Persistence ✅ — SQLite (`modernc.org/sqlite`, pure Go, cross-compiles to Linux) via
+  `server/store.go`: `rooms` (host_key upserted at every helper handshake + owner) and
+  `sessions`. Turso-ready: same queries, driver+DSN swap (documented in DISCORD-AUTH.md).
+- Graceful fallback ✅ — no `-discord-id/-discord-secret` → `/auth/*` 404, printed-key
+  gate unchanged (verified: config `enabled:false`, host WS still rejects without key).
+- UI ✅ — host panel Discord banner: bind / sign-in-again / owner / denied / unclaimed
+  states; routes to the public page when opened on localhost. `-db`, env fallbacks
+  (`GOLIVE_*`) documented.
+- ⏳ End-to-end validation — needs the user's Discord application (client id/secret +
+  registered redirect URI). Not yet tested against the real Discord authorization server;
+  local flow verified: 302 to authorize, bad-state 400, config/me endpoints. Owner
+  transfer/avatar rendering listed as follow-ups in DISCORD-AUTH.md.
 
 1. Add a host/viewer diagnostics panel showing the final transport path:
    `direct host`, `direct srflx`, `direct prflx`, or `TURN relay` (the last only exists from v2).

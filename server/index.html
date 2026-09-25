@@ -98,6 +98,10 @@
       <span class="badge"><span class="dot" id="hDotLive"></span> <span id="hTxtLive">idle</span></span>
     </div>
     <div class="muted" id="hostState"></div>
+    <div id="discordAuth" style="display:none" class="row">
+      <span class="muted" id="discordTxt"></span>
+      <a id="discordBtn" href="#" style="margin-left:8px; text-decoration:none; padding:2px 10px; border:1px solid #5865F2; border-radius:6px; color:#5865F2; white-space:nowrap">Sign in with Discord</a>
+    </div>
     <div id="noHelper" class="row" style="display:none">
       <span class="muted">No native helper connected. Run it once on this machine, then reload:</span>
     </div>
@@ -363,6 +367,7 @@ function runHost() {
   document.getElementById("copyBtn").onclick = () => navigator.clipboard.writeText(roomLink);
 
   noHelperCmd.textContent = `golive-helper --server ${location.origin} --room ${roomId} --key ${key || "<see helper output>"}`;
+  initDiscordAuth();
 
   let ws = null, viewerCount = 0, prevOnline = false, srcRequested = false;
   const peers = new Map(); // viewerId -> RTCPeerConnection (host side of the SAME connection the helper drives — see note below)
@@ -380,6 +385,64 @@ function runHost() {
   }
   document.getElementById("brInput").oninput = updateEstimate;
   updateEstimate();
+
+  async function initDiscordAuth() {
+    const box = document.getElementById("discordAuth");
+    let cfg;
+    try { cfg = await (await fetch("/auth/config")).json(); } catch { return; }
+    if (!cfg.enabled) return;
+    box.style.display = "flex";
+    const txt = document.getElementById("discordTxt");
+    const btn = document.getElementById("discordBtn");
+    let me = null;
+    try { const resp = await fetch(`/auth/me?room=${encodeURIComponent(roomId)}`); if (resp.ok) me = await resp.json(); } catch {}
+
+    const denied = params.get("denied"), unclaimed = params.get("unclaimed");
+    const onPublic = location.origin === cfg.publicUrl;
+    const login = `${cfg.publicUrl}/auth/discord/login?room=${encodeURIComponent(roomId)}${key ? "&key=" + encodeURIComponent(key) : ""}`;
+
+    if (denied) {
+      txt.textContent = "This room is controlled by another Discord account — host auth denied.";
+      btn.style.display = "none";
+      return;
+    }
+    if (unclaimed) {
+      txt.textContent = "Could not bind this room: the printed room key is required to claim it. Open the host page with the key, then sign in.";
+      btn.style.display = "none";
+      return;
+    }
+    if (me && me.authenticated && me.owner) {
+      txt.textContent = `Signed in as ${me.name} — this room is bound to your account.`;
+      btn.style.display = "none";
+      return;
+    }
+    if (me && me.authenticated && me.claimed) {
+      txt.textContent = `Signed in as ${me.name}, but this room belongs to another Discord account.`;
+      btn.style.display = "none";
+      return;
+    }
+    if (me && me.authenticated) {
+      txt.textContent = key
+        ? `Signed in as ${me.name} — sign in again to bind this room to your account (replaces the printed key).`
+        : `Signed in as ${me.name}, but host control needs the page that carries the printed key.`;
+    } else if (me && me.claimed) {
+      txt.textContent = "This room is bound to a Discord account. Sign in to control it.";
+    } else if (key) {
+      txt.textContent = "Bind this room to your Discord account (replaces the printed key). You'll hand over the key during sign-in.";
+    } else {
+      txt.textContent = "This room is not bound to a Discord account yet. Open the host page with the room key to claim it.";
+      btn.style.display = "none";
+      return;
+    }
+    if (!onPublic) {
+      txt.textContent += " Host control via Discord works on the public page — ";
+      btn.href = cfg.publicUrl + "/host/" + encodeURIComponent(roomId) + (key ? "?key=" + encodeURIComponent(key) : "");
+      btn.textContent = "open it";
+      return;
+    }
+    btn.href = login;
+    btn.textContent = "Sign in with Discord";
+  }
 
   function connect() {
     ws = new WebSocket(`${wsBase}/ws?role=host&room=${encodeURIComponent(roomId)}&key=${encodeURIComponent(key)}`);

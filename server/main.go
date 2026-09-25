@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,13 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 //go:embed index.html
 var indexHTML []byte
@@ -56,6 +64,7 @@ var (
 	rooms   = map[string]*room{}
 	nextID  int
 	up      = websocket.Upgrader{ReadBufferSize: 1 << 16, WriteBufferSize: 1 << 16}
+	db      *store
 )
 
 func getRoom(id string, create bool) *room {
@@ -116,10 +125,13 @@ func wsHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	case "host":
-		if key == "" || key != r.hostKey {
-			r.mu.Unlock()
-			http.Error(w, "bad host key", 403)
-			return
+		owns := r.hostKey != "" && key == r.hostKey
+		if !owns {
+			if u := sessionUser(req); u == nil || db.owner(roomID) != u.ID {
+				r.mu.Unlock()
+				http.Error(w, "host auth required: room key or Discord owner", 403)
+				return
+			}
 		}
 	case "viewer":
 	default:
@@ -166,6 +178,9 @@ func wsHandler(w http.ResponseWriter, req *http.Request) {
 			r.helper.ws.Close() // same key: newer helper replaces the older one
 		}
 		r.helper, r.hostKey, r.status, r.live = c, key, nil, false
+		if err := db.saveHostKey(roomID, key); err != nil {
+			log.Printf("[%s] host key persist failed: %v", roomID, err)
+		}
 		for id := range r.viewers {
 			c.send(map[string]any{"type": "viewer-join", "viewer": id})
 		}
@@ -307,7 +322,24 @@ func cleanup(id string, r *room) {
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
+	discordID := flag.String("discord-id", envOr("GOLIVE_DISCORD_ID", ""), "Discord OAuth client id (enables Discord host login)")
+	discordSecret := flag.String("discord-secret", envOr("GOLIVE_DISCORD_SECRET", ""), "Discord OAuth client secret")
+	publicURL := flag.String("public-url", envOr("GOLIVE_PUBLIC_URL", "https://golive.puhl.dev"), "public base URL for the callback + post-login redirects")
+	dbPath := flag.String("db", envOr("GOLIVE_DB", "golive.db"), "SQLite path for rooms/sessions (Discord auth persistence)")
 	flag.Parse()
+
+	var err error
+	if db, err = openStore(*dbPath); err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+	defer db.close()
+	oauthCfg = newOAuthConfig(*discordID, *discordSecret, *publicURL)
+	if oauthCfg.enabled {
+		log.Printf("discord oauth enabled; redirect_uri=%s", oauthCfg.redirectURI)
+	} else {
+		log.Printf("discord oauth disabled (no -discord-id/-discord-secret); printed-key gate only")
+	}
+
 	favicon := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Write(faviconPNG)
@@ -321,6 +353,10 @@ func main() {
 	mux.HandleFunc("/favicon.png", favicon)
 	mux.HandleFunc("/ws", wsHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "ok") })
+	mux.HandleFunc("/auth/config", handleAuthConfig)
+	mux.HandleFunc("/auth/me", handleAuthMe)
+	mux.HandleFunc("/auth/discord/login", availability(handleDiscordLogin))
+	mux.HandleFunc("/auth/discord/callback", availability(handleDiscordCallback))
 	mux.HandleFunc("/watch/", page)
 	mux.HandleFunc("/host/", page)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

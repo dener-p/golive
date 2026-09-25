@@ -15,6 +15,11 @@ helper/golive-helper
 .vscode/
 .idea/
 
+# SQLite state (Discord-auth rooms/sessions + stray test DBs)
+*.db
+*.db-wal
+*.db-shm
+
 # OS junk
 Thumbs.db
 Desktop.ini
