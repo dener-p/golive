@@ -92,7 +92,9 @@ func openURL(url string) {
 }
 
 func copyText(s string) {
-	exec.Command("powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", s).Run()
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", s)
+	noWindow(cmd) // powershell is console-subsystem: without this it pops a console flash
+	cmd.Run()
 }
 
 // The tray icon is the site favicon (keep helper/assets/favicon.png in sync with

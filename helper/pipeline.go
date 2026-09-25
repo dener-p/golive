@@ -139,6 +139,7 @@ var gstElementFor = map[string]string{
 
 func haveElement(el string) bool {
 	cmd := exec.Command(gstTool("gst-inspect-1.0"), el)
+	noWindow(cmd)
 	if e := gstEnv(); len(e) > 0 {
 		cmd.Env = append(os.Environ(), e...)
 	}
@@ -212,6 +213,7 @@ func launch(o captureOpts, enc string, onUnit func([]obu), onExit func(error)) (
 	logf("pipeline: gst-launch-1.0 -q %s", desc)
 
 	cmd := exec.Command(gstTool("gst-launch-1.0"), append([]string{"-q"}, strings.Fields(desc)...)...)
+	noWindow(cmd) // the packaged helper has no console; a console child would pop a terminal
 	if e := gstEnv(); len(e) > 0 {
 		cmd.Env = append(os.Environ(), e...)
 	}

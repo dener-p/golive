@@ -120,11 +120,12 @@ func main() {
 	explicit := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 	guiHidden := runtime.GOOS == "windows" && !consoleVisible()
-	if guiHidden || *tray {
-		if f := openLogFile(); f != nil {
-			defer f.Close()
-			log.SetOutput(io.MultiWriter(os.Stderr, f))
-		}
+	if f := openLogFile(); f != nil && (guiHidden || *tray) {
+		defer f.Close()
+		// File FIRST, stderr best-effort: io.MultiWriter stops at the first erroring writer,
+		// and a GUI-subsystem process has no usable stderr once the launcher detaches — that
+		// used to silently starve the log file after the first few lines.
+		log.SetOutput(io.MultiWriter(f, os.Stderr))
 	}
 
 	r, k := loadIdentity(*room, *key)
