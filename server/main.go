@@ -22,6 +22,9 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
+//go:embed public/favicon.png
+var faviconPNG []byte
+
 type client struct {
 	ws *websocket.Conn
 	mu sync.Mutex
@@ -305,11 +308,17 @@ func cleanup(id string, r *room) {
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
+	favicon := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(faviconPNG)
+	}
 	page := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/favicon.ico", favicon)
+	mux.HandleFunc("/favicon.png", favicon)
 	mux.HandleFunc("/ws", wsHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "ok") })
 	mux.HandleFunc("/watch/", page)
