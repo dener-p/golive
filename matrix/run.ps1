@@ -45,7 +45,13 @@ $iceTxt = if ($r.iceFinal) { $r.iceFinal } else { "n/a" }
 
 $path = Join-Path $PSScriptRoot "RESULTS.md"
 $row = "| $(Get-Date -Format yyyy-MM-dd) | $(& $esc $Label) | $directTxt | $(& $esc $r.path) | $candDesc | $($r.connectedMs) ms | $($r.rtpPkts) pk | $kfTxt | $iceTxt |"
-Add-Content -Encoding utf8 -Path $path -Value $row
+$content = Get-Content -Raw -Encoding utf8 -Path $path
+if ($content -match "(?m)^<!-- results appended here") {
+  $content = $content -replace "(?m)^<!-- results appended here", "$row`n<!-- results appended here"
+} else {
+  $content += "`n$row"
+}
+Set-Content -Encoding utf8 -Path $path -Value $content
 Write-Host "`nappended to matrix/RESULTS.md:"
 Write-Host $row
 

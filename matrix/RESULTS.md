@@ -18,5 +18,8 @@ Otherwise the two routers can't mutual-hole-punch (symmetric NAT is the usual su
 
 | date | side | direct | path | cands | connect ms | pk | kf | ice |
 |------|------|--------|------|-------|-----------|----|----|-----|
-<!-- results appended here by matrix/run.ps1 -->| 2026-09-25 | A=this-box loopback | YES | host fdfd::1aba:db37:65100 <-> host fdfd::1aba:db37:56306 | 13 cands / srflx OK | 1069 ms | 3569 pk | 5 kf | connected |
+| 2026-09-25 | A=this-box loopback | YES | host fdfd::1aba:db37:65100 <-> host fdfd::1aba:db37:56306 | 13 cands / srflx OK | 1069 ms | 3569 pk | 5 kf | connected |
 | 2026-09-25 | A=this-box via puhl.dev tunnel | YES | host fdfd::1aba:db37:58882 <-> host fdfd::1aba:db37:58857 | 13 cands / srflx OK | 1368 ms | 1411 pk | 5 kf | connected |
+| 2026-09-25 | B=phone on home WiFi (same /64 as PC) | YES | srflx 2804:2984:9529:2100:… <-> srflx 2804:2984:9529:2100:… | browser (no probe) | ~1 s | n/a | streamed | connected |
+| 2026-09-25 | **B=notebook via USB tether (IPv4-only, phone-NAT → carrier CGNAT)** | **NO** | — (ICE failed after ~30 s; helper v3/v7/v12: 3 attempts) | unknown (browser) | — | 0 | no media | **failed** |
+<!-- results appended here by matrix/run.ps1 -->
