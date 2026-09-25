@@ -172,11 +172,15 @@ func main() {
 	})
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
 		fmt.Printf("ICE: %s\n", s)
-		dc.setIce(s.String())
+		if s != webrtc.ICEConnectionStateClosed { // we Close() the pc ourselves at the end; ignore the teardown transition
+			dc.setIce(s.String())
+		}
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		fmt.Printf("PC: %s\n", s)
-		dc.setConn(s.String())
+		if s != webrtc.PeerConnectionStateClosed {
+			dc.setConn(s.String())
+		}
 		if s == webrtc.PeerConnectionStateConnected {
 			connAt.Store(time.Now().UnixMilli())
 		}
