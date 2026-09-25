@@ -64,10 +64,16 @@ exit) row is still appended — failures are data.
 |---|----------------------------------|--------|
 | 1 | this box loopback → same box | direct YES, host/prflx |
 | 2 | this box WiFi → phone on SAME WiFi | direct YES |
-| 3 | this box → phone hotspot (4G/5G) | direct YES usually (carrier CGNAT edge cases) |
-| 4 | phone hotspot → this box (reverse) | direct YES usually |
 | 5 | this box → office/guest WiFi | often fails (captive/symmetric) — good negative case |
 | 6 | smartphone browser → viewer link | decode + stats, the real-live test |
+
+**Marked skip (won't test):** devices on carrier mobile data (USB-tether notebook and the
+phone itself) with **no IPv6**. Seen in practice: IPv4-only + carrier CGNAT cannot
+mutual-hole-punch against a home router — the helper logged the notebook failing after
+~30 s of ICE, all attempts (rows in RESULTS.md). Even Parsec, which runs its own relay
+infrastructure, cannot connect there — so a direct/STUN-only v1 getting a clean
+"Direct connection failed" is the *correct* v1 outcome, not a fixable gap. Only a relay
+(v2 TURN) could help that environment.
 
 ## Reading the results
 
