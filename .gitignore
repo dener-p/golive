@@ -1,0 +1,18 @@
+# Build artifacts
+*.exe
+*.exe.new
+golive-helper-*
+server/golive-server
+server/server
+server/public/helper/
+helper/golive-helper
+
+# Local dev state
+*.log
+.history/
+.vscode/
+.idea/
+
+# OS junk
+Thumbs.db
+Desktop.ini

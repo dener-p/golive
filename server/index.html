@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>golive</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b0d10; color: #e8eaed;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 24px 16px 64px;
+  }
+  h1 { font-size: 18px; font-weight: 600; letter-spacing: .02em; margin: 0 0 4px; }
+  .sub { color: #8a919c; font-size: 13px; margin-bottom: 20px; }
+  video {
+    width: 100%; max-width: 960px; aspect-ratio: 16/9; background: #000;
+    border-radius: 10px; outline: 1px solid #23262b;
+  }
+  .panel {
+    width: 100%; max-width: 960px; background: #14171b; border: 1px solid #23262b;
+    border-radius: 10px; padding: 16px 18px; margin-top: 14px;
+  }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .row + .row { margin-top: 10px; }
+  label { color: #a9b0ba; font-size: 13px; min-width: 64px; }
+  select, input[type=number], input[type=text] {
+    background: #0b0d10; color: #e8eaed; border: 1px solid #2b2f36; border-radius: 6px;
+    padding: 6px 8px; font-size: 13px;
+  }
+  button {
+    background: #2b6ef2; color: #fff; border: none; border-radius: 6px; padding: 8px 16px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { background: #2b2f36; color: #6b7280; cursor: default; }
+  button.ghost { background: transparent; border: 1px solid #2b2f36; color: #c7cbd1; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 9px;
+    border-radius: 999px; background: #1c1f24; border: 1px solid #2b2f36; color: #a9b0ba;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b7280; }
+  .dot.on { background: #3ddc84; }
+  .dot.warn { background: #f2b02b; }
+  .dot.err { background: #ef4444; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 10px; margin-top: 4px; }
+  .stat b { display: block; font-size: 17px; font-weight: 600; }
+  .stat span { color: #8a919c; font-size: 12px; }
+  .linkbox {
+    display: flex; gap: 8px; align-items: center; background: #0b0d10; border: 1px solid #2b2f36;
+    border-radius: 6px; padding: 8px 10px; font-size: 13px; word-break: break-all;
+  }
+  .err-msg { color: #ef4444; font-size: 13px; margin-top: 8px; }
+  .muted { color: #8a919c; font-size: 12px; }
+  a { color: #6ea8fe; }
+  .hint { font-size: 12px; color: #6b7280; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>golive</h1>
+  <div class="sub" id="subtitle">connecting…</div>
+  <video id="video" autoplay playsinline muted></video>
+
+  <!-- VIEWER PANEL -->
+  <div class="panel" id="viewerPanel" style="display:none">
+    <div class="row">
+      <span class="badge"><span class="dot" id="dotHelper"></span> <span id="txtHelper">helper offline</span></span>
+      <span class="badge"><span class="dot" id="dotLive"></span> <span id="txtLive">not streaming</span></span>
+      <span class="badge" id="pathBadge" style="display:none"></span>
+    </div>
+    <div class="stats" id="viewerStats" style="display:none">
+      <div class="stat"><b id="stFps">–</b><span>fps</span></div>
+      <div class="stat"><b id="stBitrate">–</b><span>kbit/s</span></div>
+      <div class="stat"><b id="stRtt">–</b><span>rtt ms</span></div>
+      <div class="stat"><b id="stLoss">–</b><span>packet loss</span></div>
+    </div>
+    <div class="err-msg" id="viewerErr"></div>
+  </div>
+
+  <!-- HOST PANEL -->
+  <div class="panel" id="hostPanel" style="display:none">
+    <div class="row">
+      <span class="badge"><span class="dot" id="hDotHelper"></span> <span id="hTxtHelper">checking for helper…</span></span>
+      <span class="badge"><span class="dot" id="hDotLive"></span> <span id="hTxtLive">idle</span></span>
+    </div>
+    <div id="noHelper" class="row" style="display:none">
+      <span class="muted">No native helper connected. Run it once on this machine, then reload:</span>
+    </div>
+    <div id="noHelperCmd" class="linkbox" style="display:none"></div>
+
+    <div id="controls" style="display:none">
+      <div class="row">
+        <label>Source</label>
+        <select id="srcSel">
+          <option value="">Screen</option>
+          <option value="test">Test pattern</option>
+        </select>
+        <label>Bitrate</label>
+        <input id="brInput" type="number" value="4000" min="500" max="20000" step="500" style="width:90px"> kbit/s
+        <label>FPS</label>
+        <input id="fpsInput" type="number" value="30" min="5" max="60" style="width:70px">
+      </div>
+      <div class="row">
+        <button id="startBtn">Start streaming</button>
+        <button id="stopBtn" class="ghost" disabled>Stop</button>
+        <span class="muted" id="uploadEstimate"></span>
+      </div>
+      <div class="hint">Upload needed ≈ bitrate × viewers watching. This helper streams P2P directly to each viewer — no relay server multiplies your bitrate for you.</div>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <label>Room link</label>
+      <div class="linkbox" id="roomLink" style="flex:1"></div>
+      <button class="ghost" id="copyBtn">Copy</button>
+    </div>
+    <div class="err-msg" id="hostErr"></div>
+  </div>
+
+<script>
+"use strict";
+const STUN = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun.cloudflare.com:3478",
+];
+
+const path = location.pathname.split("/").filter(Boolean); // ["watch", roomId] or ["host", roomId]
+const mode = path[0] === "host" ? "host" : "watch";
+const roomId = path[1] || "";
+const params = new URLSearchParams(location.search);
+const wsBase = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+
+document.getElementById(mode === "host" ? "hostPanel" : "viewerPanel").style.display = "block";
+document.title = mode === "host" ? "golive — host" : "golive — watch";
+
+if (!roomId) {
+  document.getElementById("subtitle").textContent = "no room id in the URL";
+} else if (mode === "watch") {
+  runViewer();
+} else {
+  runHost();
+}
+
+// ---------------------------------------------------------------- viewer
+
+function runViewer() {
+  document.getElementById("subtitle").textContent = "room " + roomId;
+  const video = document.getElementById("video");
+  const dotHelper = document.getElementById("dotHelper"), txtHelper = document.getElementById("txtHelper");
+  const dotLive = document.getElementById("dotLive"), txtLive = document.getElementById("txtLive");
+  const errBox = document.getElementById("viewerErr");
+  const pathBadge = document.getElementById("pathBadge");
+  const statsBox = document.getElementById("viewerStats");
+
+  let pc = null, statTimer = null;
+
+  function connect() {
+    const ws = new WebSocket(`${wsBase}/ws?role=viewer&room=${encodeURIComponent(roomId)}`);
+    ws.onopen = () => { errBox.textContent = ""; };
+    ws.onclose = () => { setTimeout(connect, 1500); };
+    ws.onerror = () => {};
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "status") {
+        setDot(dotHelper, txtHelper, m.helper ? "helper connected" : "helper offline", m.helper ? "on" : "");
+        setDot(dotLive, txtLive, m.live ? "live" : "not streaming", m.live ? "on" : "");
+        if (!m.live) closePeer();
+      } else if (m.type === "signal") {
+        handleSignal(ws, m.data);
+      }
+    };
+  }
+
+  function setDot(dot, txt, text, cls) {
+    dot.className = "dot" + (cls ? " " + cls : "");
+    txt.textContent = text;
+  }
+
+  async function handleSignal(ws, data) {
+    if (data.error) {
+      errBox.textContent = data.error;
+      return;
+    }
+    if (data.sdp && data.sdp.type === "offer") {
+      closePeer();
+      pc = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
+      pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
+      pc.onicecandidate = (e) => {
+        if (e.candidate) ws.send(JSON.stringify({ type: "signal", data: { candidate: e.candidate.toJSON() } }));
+      };
+      pc.oniceconnectionstatechange = () => {
+        const s = pc.iceConnectionState;
+        if (s === "failed") errBox.textContent = "Connection failed. If this keeps happening, the host needs to configure a TURN server for your network.";
+        if (s === "connected" || s === "completed") errBox.textContent = "";
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "connected") startStats();
+      };
+      await pc.setRemoteDescription(data.sdp);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: "signal", data: { sdp: pc.localDescription } }));
+    } else if (data.candidate && pc) {
+      try { await pc.addIceCandidate(data.candidate); } catch (e) {}
+    }
+  }
+
+  function closePeer() {
+    if (statTimer) clearInterval(statTimer);
+    if (pc) { pc.close(); pc = null; }
+    statsBox.style.display = "none";
+    pathBadge.style.display = "none";
+  }
+
+  function startStats() {
+    statsBox.style.display = "grid";
+    let lastBytes = 0, lastTime = performance.now(), lastFrames = 0;
+    statTimer = setInterval(async () => {
+      if (!pc) return;
+      const stats = await pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "inbound-rtp" && r.kind === "video") {
+          const now = performance.now();
+          const dt = (now - lastTime) / 1000;
+          const kbps = Math.round(((r.bytesReceived - lastBytes) * 8) / 1000 / dt);
+          const fps = Math.round((r.framesDecoded - lastFrames) / dt);
+          document.getElementById("stBitrate").textContent = kbps > 0 ? kbps : "–";
+          document.getElementById("stFps").textContent = fps > 0 ? fps : "–";
+          document.getElementById("stLoss").textContent = r.packetsLost ?? "0";
+          lastBytes = r.bytesReceived; lastFrames = r.framesDecoded; lastTime = now;
+        }
+        if (r.type === "candidate-pair" && r.state === "succeeded" && r.nominated) {
+          const local = stats.get(r.localCandidateId), remote = stats.get(r.remoteCandidateId);
+          document.getElementById("stRtt").textContent = r.currentRoundTripTime != null ? Math.round(r.currentRoundTripTime * 1000) : "–";
+          if (local && remote) {
+            const relay = local.candidateType === "relay" || remote.candidateType === "relay";
+            pathBadge.style.display = "inline-flex";
+            pathBadge.textContent = relay ? "via TURN relay" : "direct (" + local.candidateType + ")";
+          }
+        }
+      });
+    }, 1000);
+  }
+
+  connect();
+}
+
+// ---------------------------------------------------------------- host
+
+function runHost() {
+  const key = params.get("key") || "";
+  document.getElementById("subtitle").textContent = "room " + roomId;
+  const video = document.getElementById("video");
+  const dotHelper = document.getElementById("hDotHelper"), txtHelper = document.getElementById("hTxtHelper");
+  const dotLive = document.getElementById("hDotLive"), txtLive = document.getElementById("hTxtLive");
+  const controls = document.getElementById("controls");
+  const noHelper = document.getElementById("noHelper"), noHelperCmd = document.getElementById("noHelperCmd");
+  const startBtn = document.getElementById("startBtn"), stopBtn = document.getElementById("stopBtn");
+  const hostErr = document.getElementById("hostErr");
+  const uploadEstimate = document.getElementById("uploadEstimate");
+
+  const roomLink = `${location.origin}/watch/${roomId}`;
+  document.getElementById("roomLink").textContent = roomLink;
+  document.getElementById("copyBtn").onclick = () => navigator.clipboard.writeText(roomLink);
+
+  noHelperCmd.textContent = `golive-helper --server ${location.origin} --room ${roomId} --key ${key || "<see helper output>"}`;
+
+  let ws = null, viewerCount = 0;
+  const peers = new Map(); // viewerId -> RTCPeerConnection (host side of the SAME connection the helper drives — see note below)
+
+  // NOTE: per the architecture, the *host browser never touches the helper directly and
+  // never terminates media itself* — the helper alone holds the WebRTC peer connections to
+  // viewers. This page only sends control commands and displays status the helper reports
+  // (viewer count, bitrate, per-viewer connection state) over the relay.
+
+  function updateEstimate() {
+    const br = parseInt(document.getElementById("brInput").value || "0", 10);
+    uploadEstimate.textContent = viewerCount > 0
+      ? `≈ ${(br * viewerCount / 1000).toFixed(1)} Mbit/s upload needed for ${viewerCount} viewer(s)`
+      : `≈ ${(br / 1000).toFixed(1)} Mbit/s upload needed per viewer`;
+  }
+  document.getElementById("brInput").oninput = updateEstimate;
+  updateEstimate();
+
+  function connect() {
+    ws = new WebSocket(`${wsBase}/ws?role=host&room=${encodeURIComponent(roomId)}&key=${encodeURIComponent(key)}`);
+    ws.onclose = () => setTimeout(connect, 1500);
+    ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "status") {
+        const online = !!m.helper;
+        dotHelper.className = "dot" + (online ? " on" : "");
+        txtHelper.textContent = online ? "helper connected" : "helper offline";
+        controls.style.display = online ? "block" : "none";
+        noHelper.style.display = online ? "none" : "flex";
+        noHelperCmd.style.display = online ? "none" : "block";
+        if (online && m.info) applyStatus(m.info);
+        if (!online) { dotLive.className = "dot"; txtLive.textContent = "idle"; }
+      } else if (m.type === "error") {
+        hostErr.textContent = m.message;
+      }
+    };
+  }
+
+  function applyStatus(info) {
+    hostErr.textContent = info.error || "";
+    const live = !!info.streaming;
+    dotLive.className = "dot" + (live ? " on" : (info.error ? " err" : ""));
+    txtLive.textContent = live ? `live via ${info.encoder} @ ${info.actualKbps || info.bitrate} kbit/s` : (info.error ? "error" : "idle");
+    startBtn.disabled = live;
+    stopBtn.disabled = !live;
+    viewerCount = (info.viewers || []).length;
+    updateEstimate();
+  }
+
+  startBtn.onclick = () => {
+    hostErr.textContent = "";
+    ws.send(JSON.stringify({
+      type: "cmd", cmd: "start",
+      params: {
+        bitrate: parseInt(document.getElementById("brInput").value, 10),
+        fps: parseInt(document.getElementById("fpsInput").value, 10),
+      },
+    }));
+  };
+  stopBtn.onclick = () => ws.send(JSON.stringify({ type: "cmd", cmd: "stop" }));
+
+  video.style.display = "none"; // host browser never receives media — see note above
+  connect();
+}
+</script>
+</body>
+</html>
