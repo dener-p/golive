@@ -131,6 +131,7 @@ func handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if u := sessionUser(r); u != nil {
 		out["authenticated"] = true
+		out["id"] = u.ID
 		out["name"] = u.displayName()
 		out["avatar"] = u.Avatar
 		if room != "" {
@@ -153,9 +154,9 @@ func handleDiscordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := url.URL{
-		Scheme:   "https",
-		Host:     "discord.com",
-		Path:     "/api/oauth2/authorize",
+		Scheme: "https",
+		Host:   "discord.com",
+		Path:   "/api/oauth2/authorize",
 		RawQuery: url.Values{
 			"client_id":     {oauthCfg.clientID},
 			"redirect_uri":  {oauthCfg.redirectURI},
@@ -195,9 +196,13 @@ func handleDiscordCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, hostPage+"?denied=1", http.StatusFound)
 			return
 		}
-	} else if !claimRoom(pa, u.ID) {
+	} else if !claimRoom(pa, u) {
 		http.Redirect(w, r, hostPage+"?unclaimed=1", http.StatusFound)
 		return
+	}
+
+	if err := db.refreshOwnerIdentity(u); err != nil {
+		log.Printf("refresh owner identity failed for %s: %v", u.ID, err)
 	}
 
 	setSessionCookie(w, tok)
@@ -206,17 +211,17 @@ func handleDiscordCallback(w http.ResponseWriter, r *http.Request) {
 
 // claimRoom binds the room once, only when the printed key matches (physical-access
 // proof). Returns false when the key is missing/wrong, leaving the room unclaimed.
-func claimRoom(pa pendingAuth, discordID string) bool {
+func claimRoom(pa pendingAuth, u discordUser) bool {
 	if pa.key == "" {
 		return false
 	}
-	ok, err := db.claim(pa.room, pa.key, discordID)
+	ok, err := db.claim(pa.room, pa.key, u)
 	if err != nil {
 		log.Printf("[%s] claim failed: %v", pa.room, err)
 		return false
 	}
 	if ok {
-		log.Printf("[%s] room claimed by discord user %s", pa.room, discordID)
+		log.Printf("[%s] room claimed by discord user %s", pa.room, u.ID)
 	}
 	return ok
 }

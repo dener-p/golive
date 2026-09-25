@@ -3,7 +3,7 @@
 // The live room state (helper/hosts/viewers, WebRTC relay) stays in memory; the DB
 // only keeps the two durable bits of Discord auth:
 //   - rooms:    room id -> printed host key (written at each helper handshake) and,
-//               once claimed, the owning Discord user id
+//     once claimed, the owning Discord user id
 //   - sessions: login token -> Discord user, so a signed-in host survives server restarts
 //
 // The driver is modernc.org/sqlite (pure Go, no CGO) so the server cross-compiles to
@@ -73,10 +73,12 @@ func (s *store) close() { s.db.Close() }
 func (s *store) migrate() error {
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS rooms (
-  id         TEXT PRIMARY KEY,
-  host_key   TEXT NOT NULL DEFAULT '',
-  owner      TEXT NOT NULL DEFAULT '',
-  claimed_at TIMESTAMP
+  id          TEXT PRIMARY KEY,
+  host_key    TEXT NOT NULL DEFAULT '',
+  owner       TEXT NOT NULL DEFAULT '',
+  owner_name  TEXT NOT NULL DEFAULT '',
+  owner_avatar TEXT NOT NULL DEFAULT '',
+  claimed_at  TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token      TEXT PRIMARY KEY,
@@ -87,6 +89,38 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TIMESTAMP
 );
 `)
+	if err != nil {
+		return err
+	}
+	// rooms existed without the owner display columns on some DBs — ALTER them in.
+	cols := map[string]bool{}
+	if rows, err := s.db.Query("PRAGMA table_info(rooms)"); err == nil {
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, typ string
+			var dflt sql.NullString
+			if rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk) == nil {
+				cols[name] = true
+			}
+		}
+		rows.Close()
+	}
+	for _, col := range []struct{ name, def string }{
+		{"owner_name", "TEXT NOT NULL DEFAULT ''"},
+		{"owner_avatar", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if !cols[col.name] {
+			if _, err := s.db.Exec("ALTER TABLE rooms ADD COLUMN " + col.name + " " + col.def); err != nil {
+				return err
+			}
+		}
+	}
+	// Backfill display info for already-claimed rooms (no claim write) from the
+	// owner's newest session; fresh claims set it directly.
+	_, err = s.db.Exec(`UPDATE rooms SET
+		owner_name   = COALESCE((SELECT username FROM sessions WHERE sessions.discord_id = rooms.owner ORDER BY created_at DESC LIMIT 1), owner_name),
+		owner_avatar = COALESCE((SELECT avatar   FROM sessions WHERE sessions.discord_id = rooms.owner ORDER BY created_at DESC LIMIT 1), owner_avatar)
+		WHERE owner != '' AND owner_name = ''`)
 	return err
 }
 
@@ -113,15 +147,34 @@ func (s *store) owner(id string) string {
 
 // claim binds a Discord user as the room owner, but only when the caller still proves
 // the printed key (physical access). Returns false when the key doesn't match.
-func (s *store) claim(id, key, discordID string) (bool, error) {
+func (s *store) claim(id, key string, u discordUser) (bool, error) {
 	res, err := s.db.Exec(
-		"UPDATE rooms SET owner = ?, claimed_at = ? WHERE id = ? AND host_key = ?",
-		discordID, time.Now().UTC(), id, key)
+		"UPDATE rooms SET owner = ?, owner_name = ?, owner_avatar = ?, claimed_at = ? WHERE id = ? AND host_key = ?",
+		u.ID, u.displayName(), u.Avatar, time.Now().UTC(), id, key)
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ownerInfo returns the room's public streamer identity (id, display name, avatar hash)
+// plus whether the room is claimed at all. Safe to serve unauthenticated — it's the
+// "channel info" a viewer needs to see who is streaming.
+func (s *store) ownerInfo(id string) (ownerID, name, avatar string, claimed bool) {
+	var o, n, a string
+	err := s.db.QueryRow("SELECT owner, owner_name, owner_avatar FROM rooms WHERE id = ?", id).Scan(&o, &n, &a)
+	claimed = err == nil && o != ""
+	return o, n, a, claimed
+}
+
+// refreshOwnerIdentity keeps every room owned by u up to date when they sign in again
+// (display name / avatar can change on Discord).
+func (s *store) refreshOwnerIdentity(u discordUser) error {
+	_, err := s.db.Exec(
+		"UPDATE rooms SET owner_name = ?, owner_avatar = ? WHERE owner = ?",
+		u.displayName(), u.Avatar, u.ID)
+	return err
 }
 
 func (s *store) upsertSession(token, discordID, username, avatar string, expires time.Time) error {

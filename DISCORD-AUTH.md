@@ -97,8 +97,18 @@ env vars are absent).
 
 The **claim was completed live**: room `2ea81f3707` is bound to the user's Discord account,
 persisted to Turso and verified by a direct read. The roadmap's last item is done on this
-branch. Follow-ups are v2 candidates:
+branch. Identity is surfaced to viewers and hosts:
+
+- Watch page shows a **streaming badge** (owner display name + Discord avatar) via the public
+  `GET /api/owner?room=<id>` endpoint (`rooms.owner_name/owner_avatar`, backfilled from the
+  owner's newest session on migrate).
+- Host page banner shows the **signed-in identity** (avatar + name).
+- The host **viewers table gained a `viewer` column**: viewers who connected with a valid
+  session cookie get an identity badge (server overlays session identity onto the helper's
+  status rows at relay time); anonymous viewers show `–`. All verified live after a clean
+  server+helper restart (durability: claim + session survive, keyless control intact).
+
+Follow-ups are v2 candidates:
 
 - Ownership transfer / release; room unclaim.
-- Avatar rendering in the host-panel identity line (shows the account name only today).
 - Branch decision: merge to main, or keep this as the v2 opener lane.

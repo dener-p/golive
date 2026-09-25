@@ -44,6 +44,10 @@
   .dot.on { background: #3ddc84; }
   .dot.warn { background: #f2b02b; }
   .dot.err { background: #ef4444; }
+  .av { width: 18px; height: 18px; border-radius: 50%; vertical-align: -4px; margin-right: 6px; }
+  .obadge { display: inline-flex; align-items: center; white-space: nowrap; font-size: 12px; color: #a9b0ba; }
+  .obadge img.av { margin-left: 0; }
+  .nobadge { color: #6b7280; font-size: 12px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 10px; margin-top: 4px; }
   .stat b { display: block; font-size: 17px; font-weight: 600; }
   .stat span { color: #8a919c; font-size: 12px; }
@@ -75,6 +79,7 @@
       <span class="badge"><span class="dot" id="dotHelper"></span> <span id="txtHelper">helper offline</span></span>
       <span class="badge"><span class="dot" id="dotLive"></span> <span id="txtLive">not streaming</span></span>
       <span class="badge" id="pathBadge" style="display:none"></span>
+      <span class="badge" id="streamerBadge" style="display:none"></span>
     </div>
     <div class="stats" id="viewerStats" style="display:none">
       <div class="stat"><b id="stFirst">–</b><span>first frame</span></div>
@@ -99,6 +104,7 @@
     </div>
     <div class="muted" id="hostState"></div>
     <div id="discordAuth" style="display:none" class="row">
+      <img id="discordAvatar" class="av" style="display:none" alt="">
       <span class="muted" id="discordTxt"></span>
       <a id="discordBtn" href="#" style="margin-left:8px; text-decoration:none; padding:2px 10px; border:1px solid #5865F2; border-radius:6px; color:#5865F2; white-space:nowrap">Sign in with Discord</a>
     </div>
@@ -143,7 +149,7 @@
       <div class="muted">viewer connections (direct P2P / STUN only in v1)</div>
       <table class="vtable">
         <thead><tr>
-          <th>id</th><th>state</th><th>path</th><th>rtt</th><th>lost</th><th>jitter</th>
+          <th>id</th><th>viewer</th><th>state</th><th>path</th><th>rtt</th><th>lost</th><th>jitter</th>
           <th>gather</th><th>check</th><th>connect</th><th>reason / candidates</th>
         </tr></thead>
         <tbody id="viewersTbody"></tbody>
@@ -166,6 +172,17 @@ const roomId = path[1] || "";
 const params = new URLSearchParams(location.search);
 const wsBase = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 
+// Discord identity helpers: avatar CDN URL + escaped display badge (reused by the
+// watch page's streamer badge, the host banner, and the viewers table).
+function avatarUrl(id, hash, size) {
+  return (id && hash) ? `https://cdn.discordapp.com/avatars/${encodeURIComponent(id)}/${encodeURIComponent(hash)}.png?size=${size || 64}` : "";
+}
+function identityHtml(idn, size) {
+  if (!idn || !idn.name) return "";
+  const url = avatarUrl(idn.id, idn.avatar, size || 32);
+  return (url ? `<img class="av" src="${url}" alt="">` : "") + esc(idn.name);
+}
+
 document.getElementById(mode === "host" ? "hostPanel" : "viewerPanel").style.display = "block";
 document.title = mode === "host" ? "golive — host" : "golive — watch";
 
@@ -181,6 +198,14 @@ if (!roomId) {
 
 function runViewer() {
   document.getElementById("subtitle").textContent = "room " + roomId;
+  // Who's streaming? The room's Discord owner (public channel info), if claimed.
+  fetch(`/api/owner?room=${encodeURIComponent(roomId)}`).then((r) => r.json()).then((o) => {
+    const el = document.getElementById("streamerBadge");
+    if (o && o.claimed && o.name) {
+      el.innerHTML = `streaming: ${identityHtml(o, 32)}`;
+      el.style.display = "";
+    }
+  }).catch(() => {});
   const video = document.getElementById("video");
   const dotHelper = document.getElementById("dotHelper"), txtHelper = document.getElementById("txtHelper");
   const dotLive = document.getElementById("dotLive"), txtLive = document.getElementById("txtLive");
@@ -394,8 +419,13 @@ function runHost() {
     box.style.display = "flex";
     const txt = document.getElementById("discordTxt");
     const btn = document.getElementById("discordBtn");
+    const av = document.getElementById("discordAvatar");
     let me = null;
     try { const resp = await fetch(`/auth/me?room=${encodeURIComponent(roomId)}`); if (resp.ok) me = await resp.json(); } catch {}
+    if (me && me.authenticated) { // show the signed-in identity badge
+      const u = avatarUrl(me.id, me.avatar, 32);
+      av.src = u; av.style.display = u ? "" : "none";
+    }
 
     const denied = params.get("denied"), unclaimed = params.get("unclaimed");
     const onPublic = location.origin === cfg.publicUrl;
@@ -523,8 +553,12 @@ function runHost() {
     const ms = (v, k) => (v[k] > 0 ? v[k] + " ms" : "–");
     for (const v of list) {
       const tr = document.createElement("tr");
+      const idn = v.identity || null;
+      const viewerCell = idn && idn.name
+        ? `<span class="obadge">${identityHtml(idn, 32)}</span>`
+        : `<span class="nobadge">–</span>`;
       tr.innerHTML =
-        `<td>${esc(v.id)}</td><td>${esc(v.state)}</td><td>${esc(v.path)}</td>` +
+        `<td>${esc(v.id)}</td><td>${viewerCell}</td><td>${esc(v.state)}</td><td>${esc(v.path)}</td>` +
         `<td>${ms(v, "rttMs")}</td><td>${v.loss || 0}</td><td>${ms(v, "jitterMs")}</td>` +
         `<td>${ms(v, "gatherMs")}</td><td>${ms(v, "checkMs")}</td><td>${ms(v, "connectMs")}</td>` +
         `<td>${esc((v.state === "failed" ? v.reason + " " : "") + (v.cands || ""))}</td>`;

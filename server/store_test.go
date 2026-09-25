@@ -24,18 +24,25 @@ func TestStoreLocalRoundTrip(t *testing.T) {
 	if got := db.hostKey("roomA"); got != "keyA" {
 		t.Fatalf("hostKey=%q", got)
 	}
-	if ok, err := db.claim("roomA", "wrong", "u1"); err != nil {
+	if ok, err := db.claim("roomA", "wrong", discordUser{ID: "u1", Username: "Derp"}); err != nil {
 		t.Fatal(err)
 	} else if ok {
 		t.Fatal("claim with wrong key must fail")
 	}
-	if ok, err := db.claim("roomA", "keyA", "u1"); err != nil {
+	if ok, err := db.claim("roomA", "keyA", discordUser{ID: "u1", Username: "Derp", Avatar: "hash123"}); err != nil {
 		t.Fatal(err)
 	} else if !ok {
 		t.Fatal("claim with right key must succeed")
 	}
 	if got := db.owner("roomA"); got != "u1" {
 		t.Fatalf("owner=%q", got)
+	}
+	oid, name, avatar, claimed := db.ownerInfo("roomA")
+	if !claimed || oid != "u1" || name != "Derp" || avatar != "hash123" {
+		t.Fatalf("ownerInfo=%q %q %q %v", oid, name, avatar, claimed)
+	}
+	if _, _, _, claimed := db.ownerInfo("nope"); claimed {
+		t.Fatal("unknown room must not be claimed")
 	}
 
 	if err := db.upsertSession("tok1", "u1", "Derp", "av", time.Now().Add(time.Hour)); err != nil {
@@ -73,13 +80,17 @@ func TestStoreTursoRoundTrip(t *testing.T) {
 	if got := db.hostKey(id); got != "kt" {
 		t.Fatalf("hostKey=%q", got)
 	}
-	if ok, err := db.claim(id, "kt", "discord-1"); err != nil {
+	if ok, err := db.claim(id, "kt", discordUser{ID: "discord-1", Username: "TursoTester", Avatar: "av1"}); err != nil {
 		t.Fatal(err)
 	} else if !ok {
 		t.Fatal("claim must succeed")
 	}
 	if got := db.owner(id); got != "discord-1" {
 		t.Fatalf("owner=%q", got)
+	}
+	oid, name, avatar, claimed := db.ownerInfo(id)
+	if !claimed || oid != "discord-1" || name != "TursoTester" || avatar != "av1" {
+		t.Fatalf("ownerInfo=%q %q %q %v", oid, name, avatar, claimed)
 	}
 	if err := db.upsertSession("tok-"+id, "discord-1", "n", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)

@@ -69,9 +69,10 @@ var indexHTML []byte
 var faviconPNG []byte
 
 type client struct {
-	ws *websocket.Conn
-	mu sync.Mutex
-	id string
+	ws   *websocket.Conn
+	mu   sync.Mutex
+	id   string
+	user *discordUser // Discord identity when the browser sent a valid session cookie
 }
 
 func (c *client) send(v any) {
@@ -121,7 +122,50 @@ func (r *room) hostStatus() any {
 	if r.helper == nil {
 		return map[string]any{"type": "status", "helper": false}
 	}
-	return map[string]any{"type": "status", "helper": true, "info": r.status}
+	var info any = r.status
+	if enriched, err := enrichViewerIdentity(r.status, r.viewers); err == nil {
+		info = enriched
+	}
+	return map[string]any{"type": "status", "helper": true, "info": info}
+}
+
+// enrichViewerIdentity overlays the server's session knowledge onto the helper's status
+// viewer rows: a viewer who signed in with Discord shows a {id,name,avatar} identity, so
+// the host table can render a badge. Unknown/anonymous viewers are left untouched.
+func enrichViewerIdentity(raw json.RawMessage, viewers map[string]*client) (any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw, err
+	}
+	vs, ok := obj["viewers"].([]any)
+	if !ok {
+		return obj, nil
+	}
+	for _, v := range vs {
+		row, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := row["id"].(string)
+		if c := viewers[id]; c != nil && c.user != nil {
+			row["identity"] = map[string]any{
+				"id": c.user.ID, "name": c.user.displayName(), "avatar": c.user.Avatar,
+			}
+		}
+	}
+	return obj, nil
+}
+
+// GET /api/owner?room=<id> — public streamer identity for the watch page ("who is
+// streaming"). Channel info, not a secret.
+func handleOwnerInfo(w http.ResponseWriter, r *http.Request) {
+	room := r.URL.Query().Get("room")
+	if room == "" {
+		http.Error(w, "missing room", 400)
+		return
+	}
+	id, name, avatar, claimed := db.ownerInfo(room)
+	json.NewEncoder(w).Encode(map[string]any{"claimed": claimed, "id": id, "name": name, "avatar": avatar})
 }
 
 func (r *room) broadcast() { // caller holds r.mu
@@ -181,6 +225,11 @@ func wsHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	c := &client{ws: ws}
+	// A browser that carried a golive_session cookie gets its Discord identity attached;
+	// the host table and any future UI can show it without exposing sessions.
+	if u := sessionUser(req); u != nil {
+		c.user = u
+	}
 	defer ws.Close()
 
 	// keepalive
@@ -408,6 +457,7 @@ func main() {
 	mux.HandleFunc("/auth/me", handleAuthMe)
 	mux.HandleFunc("/auth/discord/login", availability(handleDiscordLogin))
 	mux.HandleFunc("/auth/discord/callback", availability(handleDiscordCallback))
+	mux.HandleFunc("/api/owner", handleOwnerInfo)
 	mux.HandleFunc("/watch/", page)
 	mux.HandleFunc("/host/", page)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

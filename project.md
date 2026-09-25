@@ -473,8 +473,10 @@ Account-based host gate that replaces the printed key (M5.5 / roadmap last item)
 - Graceful fallback ✅ — no `-discord-id/-discord-secret` → `/auth/*` 404, printed-key
   gate unchanged (verified: config `enabled:false`, host WS still rejects without key).
 - UI ✅ — host panel Discord banner: bind / sign-in-again / owner / denied / unclaimed
-  states; routes to the public page when opened on localhost. `-db`, env fallbacks
-  (`GOLIVE_*`) documented.
+  states + signed-in avatar; watch page "streaming" badge via `/api/owner`; host viewers
+  table has a `viewer` column with a Discord identity badge for signed-in viewers
+  (anonymous = `–`). Routes to the public page when opened on localhost. `-db`, env
+  fallbacks (`GOLIVE_*`) documented.
 - ⏳ Final step — the browser click-through: sign into Discord on the public host page and
   claim room `2ea81f3707`. Everything up to the Discord redirect is verified on the live
   stack (Turso-backed, oauth enabled). Owner transfer/avatar listed as follow-ups in
@@ -484,10 +486,12 @@ Account-based host gate that replaces the printed key (M5.5 / roadmap last item)
 
 - User claimed room `2ea81f3707` through the live public stack; ownership persisted to
   Turso (`owner=<discord id>`, `claimed_at` set, host_key retained) — verified by a direct
-  Turso read. The last roadmap item is complete on `feature/discord-oauth`.
-- Follow-ups parked in DISCORD-AUTH.md (v2 candidates): ownership transfer/unclaim,
-  avatar in the host-panel identity line, and the branch decision (merge to main vs keep
-  as the v2 opener lane).
+  Turso read. A clean server+helper restart kept the claim and sessions intact (keyless
+  control survives). Owner name/avatar backfilled from the claim session and surfaced on
+  the watch page (streaming badge) and host page (identity badge + viewer-table column).
+  The last roadmap item is complete on `feature/discord-oauth`.
+- Follow-ups parked in DISCORD-AUTH.md (v2 candidates): ownership transfer/unclaim, and the
+  branch decision (merge to main vs keep as the v2 opener lane).
 
 1. Add a host/viewer diagnostics panel showing the final transport path:
    `direct host`, `direct srflx`, `direct prflx`, or `TURN relay` (the last only exists from v2).
