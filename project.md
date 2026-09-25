@@ -416,9 +416,10 @@ v2 the recovery path is host-provided TURN; in v1 it is a clear terminal error.
 - 6 prefer-IPv6 ⚠️ investigated, no code: pion v4 has no candidate-type preference knob (only
   global per-IP filters). Dual-stack ICE already offers both address families; where IPv4
   cannot punch, IPv6 succeeds by selection. Documented, not forced.
-- 9 UPnP/PCP ⚠️ decision: needs a pre-bound UDP socket + goupnp so the mapped router port is
-  the one ICE actually uses. Recommend defer: the recorded matrix NOs are remote-side CGNAT,
-  which UPnP (helper-side) cannot help.
+- 9 UPnP/PCP ✅ decision (deferred): needs a pre-bound UDP socket + goupnp so the mapped
+  router port is the one ICE actually uses. Deferred: the recorded matrix NOs are remote-side
+  CGNAT, which UPnP (helper-side) cannot help. Revisit if a matrix cell ever implicates the
+  helper-side router (e.g. host behind a second NAT that doesn't do UDP forwarding).
 - 10 combos: partial — loopback, IPv6 same-network, IPv4-only double-NAT → carrier CGNAT
   (`NO`, fully diagnosed). Added `webrtc-check -no-stun` to log a deterministic
   "STUN/UDP restricted" cell from any network. Two-normal-routers + UDP-restricted cells
