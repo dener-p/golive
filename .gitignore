@@ -1,5 +1,6 @@
 # Build artifacts
 *.exe
+*.exe~
 *.exe.new
 golive-helper-*
 server/golive-server

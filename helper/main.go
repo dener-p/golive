@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	randv2 "math/rand/v2"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -178,12 +179,14 @@ func (h *helper) run() {
 	for {
 		started := time.Now()
 		err := h.session()
-		logf("disconnected from server: %v", err)
+		logf("disconnected from server: %v (retrying in %s)", err, backoff)
 		h.closeAllPeers()
 		if time.Since(started) > 30*time.Second {
 			backoff = time.Second
 		}
-		time.Sleep(backoff)
+		// ±250 ms jitter so multiple helpers don't reconnect in lockstep
+		jitter := time.Duration(randv2.Int64N(500)*int64(time.Millisecond)) - 250*time.Millisecond
+		time.Sleep(backoff + jitter)
 		if backoff < 15*time.Second {
 			backoff *= 2
 		}
@@ -459,8 +462,8 @@ func (h *helper) addViewer(id string) {
 					pair.Local.Typ, pair.Local.Address, pair.Local.Port, pair.Remote.Typ, pair.Remote.Address, pair.Remote.Port)
 			}
 		case webrtc.PeerConnectionStateFailed:
-			logf("viewer %s: FAILED - direct connection impossible (no TURN in v1)", id)
-			h.sendToViewer(id, map[string]any{"error": "Direct connection failed. The host needs to configure a TURN server for this network."})
+			logf("viewer %s: FAILED - direct connection impossible (no relay in v1)", id)
+			h.sendToViewer(id, map[string]any{"error": "Direct connection failed — no direct route found to this viewer. golive v1 is direct-only (no relay); it will retry automatically if you reconnect."})
 			h.removeViewer(id)
 		}
 		h.sendStatus()

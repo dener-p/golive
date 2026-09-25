@@ -82,6 +82,11 @@
       <div class="stat"><b id="stLoss">–</b><span>packet loss</span></div>
     </div>
     <div class="err-msg" id="viewerErr"></div>
+    <div class="row" id="viewerRetryRow" style="display:none; margin-top:8px">
+      <button class="ghost" id="viewerRetry">Retry</button>
+      <span class="muted">auto-retries until the direct path succeeds</span>
+    </div>
+    <div class="muted" id="viewerState"></div>
   </div>
 
   <!-- HOST PANEL -->
@@ -90,6 +95,7 @@
       <span class="badge"><span class="dot" id="hDotHelper"></span> <span id="hTxtHelper">checking for helper…</span></span>
       <span class="badge"><span class="dot" id="hDotLive"></span> <span id="hTxtLive">idle</span></span>
     </div>
+    <div class="muted" id="hostState"></div>
     <div id="noHelper" class="row" style="display:none">
       <span class="muted">No native helper connected. Run it once on this machine, then reload:</span>
     </div>
@@ -173,58 +179,95 @@ function runViewer() {
   const dotHelper = document.getElementById("dotHelper"), txtHelper = document.getElementById("txtHelper");
   const dotLive = document.getElementById("dotLive"), txtLive = document.getElementById("txtLive");
   const errBox = document.getElementById("viewerErr");
+  const retryRow = document.getElementById("viewerRetryRow"), retryBtn = document.getElementById("viewerRetry");
+  const stateBox = document.getElementById("viewerState");
   const pathBadge = document.getElementById("pathBadge");
   const statsBox = document.getElementById("viewerStats");
 
-  let pc = null, statTimer = null;
-  let firstFrameGot = false, connectAt = 0;
+  let pc = null, statTimer = null, ws = null;
+  let firstFrameGot = false, connectAt = 0, everHadVideo = false, reconnectDelay = 1000;
+
+  const FAIL_MSG = "Direct connection failed — this network pair can't reach each other, and golive v1 is direct-only (no relay). " +
+    "It keeps retrying automatically; go direct to the host's network, or ask the host to check their firewall/upload.";
+
+  function setState(t) { stateBox.textContent = t || ""; }
+  function showError(t) {
+    errBox.textContent = t;
+    retryRow.style.display = t ? "flex" : "none";
+  }
 
   function connect() {
-    const ws = new WebSocket(`${wsBase}/ws?role=viewer&room=${encodeURIComponent(roomId)}`);
-    ws.onopen = () => { errBox.textContent = ""; };
-    ws.onclose = () => { setTimeout(connect, 1500); };
-    ws.onerror = () => {};
-    ws.onmessage = (ev) => {
+    const w = new WebSocket(`${wsBase}/ws?role=viewer&room=${encodeURIComponent(roomId)}`);
+    ws = w;
+    w.onopen = () => {
+      showError("");
+      reconnectDelay = 1000;
+      setState(everHadVideo
+        ? "stream ended — waiting for the host to restart it…"
+        : "waiting for the host to start the stream…");
+    };
+    w.onclose = () => {
+      if (ws !== w) return; // a newer connection owns the socket now (manual retry)
+      setState("server connection lost — reconnecting…");
+      const d = Math.min(reconnectDelay, 5000);
+      reconnectDelay *= 2;
+      setTimeout(connect, d);
+    };
+    w.onerror = () => {};
+    w.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.type === "status") {
         setDot(dotHelper, txtHelper, m.helper ? "helper connected" : "helper offline", m.helper ? "on" : "");
         setDot(dotLive, txtLive, m.live ? "live" : "not streaming", m.live ? "on" : "");
-        if (!m.live) closePeer();
+        if (!m.live) {
+          if (pc) closePeer();
+          setState(everHadVideo
+            ? "stream ended — waiting for the host to restart it…"
+            : (m.helper ? "waiting for the host to start the stream…" : "waiting for the host to connect its helper…"));
+        }
       } else if (m.type === "signal") {
-        handleSignal(ws, m.data);
+        handleSignal(w, m.data);
       }
     };
   }
+
+  retryBtn.onclick = () => { if (ws) ws.close(); connect(); };
 
   function setDot(dot, txt, text, cls) {
     dot.className = "dot" + (cls ? " " + cls : "");
     txt.textContent = text;
   }
 
-  async function handleSignal(ws, data) {
+  async function handleSignal(w, data) {
     if (data.error) {
-      errBox.textContent = data.error;
+      showError(data.error);
       return;
     }
     if (data.sdp && data.sdp.type === "offer") {
       closePeer();
+      showError("");
+      setState("connecting (direct P2P, STUN only)…");
       pc = new RTCPeerConnection({ iceServers: [{ urls: STUN }] });
+      const conn = pc;
       pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
       pc.onicecandidate = (e) => {
-        if (e.candidate) ws.send(JSON.stringify({ type: "signal", data: { candidate: e.candidate.toJSON() } }));
+        if (e.candidate) w.send(JSON.stringify({ type: "signal", data: { candidate: e.candidate.toJSON() } }));
       };
       pc.oniceconnectionstatechange = () => {
+        if (pc !== conn) return; // stale event from a replaced peer
         const s = pc.iceConnectionState;
-        if (s === "failed") errBox.textContent = "Connection failed. If this keeps happening, the host needs to configure a TURN server for your network.";
-        if (s === "connected" || s === "completed") errBox.textContent = "";
+        if (s === "failed") showError(FAIL_MSG);
+        if (s === "connected" || s === "completed") { showError(""); setState(""); }
       };
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") { connectAt = performance.now(); startStats(); }
+        if (pc !== conn) return; // stale event from a replaced peer
+        if (pc.connectionState === "connected") { connectAt = performance.now(); startStats(); setState(""); }
+        if (pc.connectionState === "failed") showError(FAIL_MSG);
       };
       await pc.setRemoteDescription(data.sdp);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: "signal", data: { sdp: pc.localDescription } }));
+      w.send(JSON.stringify({ type: "signal", data: { sdp: pc.localDescription } }));
     } else if (data.candidate && pc) {
       try { await pc.addIceCandidate(data.candidate); } catch (e) {}
     }
@@ -232,8 +275,9 @@ function runViewer() {
 
   function closePeer() {
     if (statTimer) clearInterval(statTimer);
-    if (pc) { pc.close(); pc = null; }
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     firstFrameGot = false;
+    if (video.srcObject) { video.srcObject = null; }
     document.getElementById("stFirst").textContent = "–";
     statsBox.style.display = "none";
     pathBadge.style.display = "none";
@@ -251,6 +295,7 @@ function runViewer() {
           const dt = (now - lastTime) / 1000;
           if (!firstFrameGot && (r.framesDecoded || 0) > 0) {
             firstFrameGot = true;
+            everHadVideo = true;
             document.getElementById("stFirst").textContent = ((now - connectAt) / 1000).toFixed(1) + " s";
           }
           const kbps = Math.round(((r.bytesReceived - lastBytes) * 8) / 1000 / dt);
@@ -289,6 +334,7 @@ function runHost() {
   const startBtn = document.getElementById("startBtn"), stopBtn = document.getElementById("stopBtn");
   const hostErr = document.getElementById("hostErr");
   const uploadEstimate = document.getElementById("uploadEstimate");
+  const hostState = document.getElementById("hostState");
 
   const roomLink = `${location.origin}/watch/${roomId}`;
   document.getElementById("roomLink").textContent = roomLink;
@@ -315,7 +361,8 @@ function runHost() {
 
   function connect() {
     ws = new WebSocket(`${wsBase}/ws?role=host&room=${encodeURIComponent(roomId)}&key=${encodeURIComponent(key)}`);
-    ws.onclose = () => setTimeout(connect, 1500);
+    ws.onopen = () => { hostState.textContent = ""; };
+    ws.onclose = () => { hostState.textContent = "server connection lost — reconnecting…"; setTimeout(connect, 1500); };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.type === "status") {
@@ -345,8 +392,16 @@ function runHost() {
   function applyStatus(info) {
     hostErr.textContent = info.error || "";
     const live = !!info.streaming;
-    dotLive.className = "dot" + (live ? " on" : (info.error ? " err" : ""));
-    txtLive.textContent = live ? `live via ${info.encoder} @ ${info.actualKbps || info.bitrate} kbit/s` : (info.error ? "error" : "idle");
+    const actual = info.actualKbps || 0;
+    const target = info.bitrate || 0;
+    const overTarget = target > 0 && actual > target * 1.25;
+    dotLive.className = "dot" + (live ? (overTarget ? " warn" : " on") : (info.error ? " err" : ""));
+    txtLive.textContent = live
+      ? `live via ${info.encoder} @ ${actual || target} kbit/s` + (overTarget ? ` — above target (${target})` : "")
+      : (info.error ? "error" : "idle");
+    txtLive.title = overTarget
+      ? "Encoder is outputting well above the configured bitrate (measured on the AMD path — it can overshoot on busy content). Consider lowering FPS or a less busy source."
+      : "";
     startBtn.disabled = live;
     stopBtn.disabled = !live;
     viewerCount = (info.viewers || []).length;
