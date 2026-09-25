@@ -53,12 +53,17 @@ or directly (for a one-off, non-Windows machine, or to watch `-verbose`):
 ```
 webrtc-check -server https://golive.puhl.dev -room <room> -seconds 20
 webrtc-check -server https://golive.puhl.dev -room <room> -seconds 20 -verbose   # show all local candidates
+webrtc-check -server https://golive.puhl.dev -room <room> -seconds 35 -no-stun  # simulate a UDP-restricted network
 ```
 
 The probe is pure Go (pion) — cross-compile it for any machine:
 `GOOS=linux GOARCH=amd64 go build -o bin/webrtc-check-linux ./tools/webrtc-check`
 (Windows: `.exe`; the `bin/` folder is gitignored, so copy the binary or build on target.
 On Linux it may need `chmod +x` after a chat/cloud transfer.)
+
+The probe trickles its candidates exactly like the browser (M6 item 2). Its RESULT also
+carries `remoteCandidates` — how many and which types the helper signaled — so a `NO` row is
+self-explanatory without checking the helper's log.
 
 `run.ps1` parses the JSON result and appends a row to `RESULTS.md`. A `NO` (non-zero
 exit) row is still appended — failures are data.

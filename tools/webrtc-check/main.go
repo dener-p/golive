@@ -39,6 +39,7 @@ func main() {
 	label := flag.String("label", "", "free-text tag for this run (e.g. 'B=phone-hotspot-4g')")
 	jsonOut := flag.Bool("json", false, "print RESULT as a single JSON line (what matrix/run.ps1 parses)")
 	verbose := flag.Bool("verbose", false, "print gathered local candidates and the selected pair")
+	noStun := flag.Bool("no-stun", false, "simulate a UDP-restricted network: gather host candidates only (no STUN)")
 	flag.Parse()
 	if *room == "" {
 		log.Fatal("-room is required")
@@ -48,6 +49,18 @@ func main() {
 
 	// candidate / pair / state tracking for the matrix diagnostics
 	dc := &diag{}
+
+	// signaling socket (dialed below); writes are serialized because candidate
+	// callbacks and the reader goroutine both write to it.
+	var ws *websocket.Conn
+	var wsMu sync.Mutex
+	sendSignal := func(data any) {
+		wsMu.Lock()
+		defer wsMu.Unlock()
+		if ws != nil {
+			ws.WriteJSON(map[string]any{"type": "signal", "data": data})
+		}
+	}
 
 	// Host role: prints live status (helper-supplied diagnostics).
 	stopStatus := make(chan struct{})
@@ -127,10 +140,16 @@ func main() {
 	)
 
 	// candidate / pair / state tracking for the matrix diagnostics
-	pc, err := api.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{{URLs: []string{
+	var iceServers []webrtc.ICEServer
+	if !*noStun {
+		iceServers = []webrtc.ICEServer{{URLs: []string{
 			"stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478",
-		}}},
+		}}}
+	} else {
+		log.Printf("no-stun: gathering host candidates only (simulating a UDP-restricted network)")
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{
+		ICEServers:         iceServers,
 		ICETransportPolicy: webrtc.ICETransportPolicyAll,
 	})
 	if err != nil {
@@ -145,6 +164,10 @@ func main() {
 		if *verbose {
 			fmt.Printf("local %s %s:%d\n", c.Typ, c.Address, c.Port)
 		}
+		init := c.ToJSON()
+		go func() {
+			sendSignal(map[string]any{"candidate": init}) // full trickle, same as the browser tab
+		}()
 	})
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
 		fmt.Printf("ICE: %s\n", s)
@@ -193,8 +216,7 @@ func main() {
 	})
 
 	u := fmt.Sprintf("%s/ws?role=viewer&room=%s", wsBase, url.QueryEscape(*room))
-	ws, _, err := websocket.DefaultDialer.Dial(u, nil)
-	if err != nil {
+	if ws, _, err = websocket.DefaultDialer.Dial(u, nil); err != nil {
 		log.Fatal(err)
 	}
 	defer ws.Close()
@@ -237,9 +259,15 @@ func main() {
 					log.Printf("set answer: %v", err)
 					continue
 				}
-				ws.WriteJSON(map[string]any{"type": "signal", "data": map[string]any{"sdp": pc.LocalDescription()}})
+				sendSignal(map[string]any{"sdp": pc.LocalDescription()})
 			case d.Candidate != nil && remoteSet:
-				pc.AddICECandidate(*d.Candidate)
+				dc.addRemote(d.Candidate.Candidate)
+				if *verbose {
+					fmt.Printf("remote %s\n", d.Candidate.Candidate)
+				}
+				if err := pc.AddICECandidate(*d.Candidate); err != nil {
+					log.Printf("add remote candidate: %v", err)
+				}
 			}
 		}
 	}()
@@ -267,6 +295,7 @@ func main() {
 		Local:          dc.lcl(),
 		Remote:         dc.rcl(),
 		LocalCandidate: dc.localCands(),
+		RemoteCands:    dc.remoteCands(),
 		SrflxLearned:   dc.srflx,
 		ConnectedMs:    connMs,
 		RTPPkts:        pkts.Load(),
@@ -289,6 +318,9 @@ func main() {
 		if r.ICEFinal != "" {
 			extra += " ice=" + r.ICEFinal
 		}
+		if r.RemoteCands != "" {
+			extra += " theirs=" + r.RemoteCands
+		}
 		fmt.Printf("RESULT viewer=%s direct=%v connectedMs=%d rtpPkts=%d keyframes=%d bytes=%d duration=%.1fs rate=%.0f pps%s\n",
 			*room, direct, connMs, pkts.Load(), keyf.Load(), byts.Load(), dur, float64(pkts.Load())/dur, extra)
 	}
@@ -303,8 +335,9 @@ type diag struct {
 	ice    string // final ICEConnectionState
 	conn   string // final PeerConnectionState
 	local  []string
-	pair   string // "<ltype> <laddr>:<lport> <-> <rtype> <raddr>:<rport>"
-	lt, rt string // selected pair types only
+	remote []string // remote candidate lines as received via signaling
+	pair   string   // "<ltype> <laddr>:<lport> <-> <rtype> <raddr>:<rport>"
+	lt, rt string   // selected pair types only
 	laddr  string
 	raddr  string
 	srflx  bool // learned a server-reflexive local address
@@ -312,6 +345,11 @@ type diag struct {
 
 func (d *diag) setIce(s string)   { d.mu.Lock(); d.ice = s; d.mu.Unlock() }
 func (d *diag) setConn(s string)  { d.mu.Lock(); d.conn = s; d.mu.Unlock() }
+func (d *diag) addRemote(line string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.remote = append(d.remote, line)
+}
 func (d *diag) addLocal(c *webrtc.ICECandidate) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -354,6 +392,51 @@ func (d *diag) localCands() []string {
 	return out
 }
 
+// remoteCands returns the candidate-type summary the remote signaled, e.g. "3 (host 1, srflx 2)".
+func (d *diag) remoteCands() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.remote) == 0 {
+		return "0 (none)"
+	}
+	host, srflx, prflx, relay := 0, 0, 0, 0
+	for _, line := range d.remote {
+		if i := strings.Index(line, "typ "); i >= 0 {
+			rest := line[i+4:]
+			if j := strings.IndexByte(rest, ' '); j >= 0 {
+				rest = rest[:j]
+			}
+			switch rest {
+			case "host":
+				host++
+			case "srflx":
+				srflx++
+			case "prflx":
+				prflx++
+			case "relay":
+				relay++
+			}
+		}
+	}
+	parts := []string{}
+	if host > 0 {
+		parts = append(parts, fmt.Sprintf("host %d", host))
+	}
+	if srflx > 0 {
+		parts = append(parts, fmt.Sprintf("srflx %d", srflx))
+	}
+	if prflx > 0 {
+		parts = append(parts, fmt.Sprintf("prflx %d", prflx))
+	}
+	if relay > 0 {
+		parts = append(parts, fmt.Sprintf("relay %d", relay))
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("%d (other)", len(d.remote))
+	}
+	return fmt.Sprintf("%d (%s)", len(d.remote), strings.Join(parts, ", "))
+}
+
 // result is the machine-readable outcome of one test run.
 type result struct {
 	Label          string   `json:"label,omitempty"`
@@ -365,6 +448,7 @@ type result struct {
 	Local          string   `json:"local,omitempty"`
 	Remote         string   `json:"remote,omitempty"`
 	LocalCandidate []string `json:"localCandidates,omitempty"`
+	RemoteCands    string   `json:"remoteCandidates,omitempty"`
 	SrflxLearned   bool     `json:"srflxLearned"`
 	ConnectedMs    int64    `json:"connectedMs"`
 	RTPPkts        int64    `json:"rtpPkts"`

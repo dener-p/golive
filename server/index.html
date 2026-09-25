@@ -51,6 +51,7 @@
     border-radius: 6px; padding: 8px 10px; font-size: 13px; word-break: break-all;
   }
   .err-msg { color: #ef4444; font-size: 13px; margin-top: 8px; }
+  .diag { font-family: ui-monospace, Consolas, monospace; color: #8a919c; font-size: 11px; white-space: pre-wrap; }
   .muted { color: #8a919c; font-size: 12px; }
   a { color: #6ea8fe; }
   .hint { font-size: 12px; color: #6b7280; margin-top: 4px; }
@@ -138,7 +139,7 @@
       <table class="vtable">
         <thead><tr>
           <th>id</th><th>state</th><th>path</th><th>rtt</th><th>lost</th><th>jitter</th>
-          <th>gather</th><th>connect</th>
+          <th>gather</th><th>connect</th><th>reason / candidates</th>
         </tr></thead>
         <tbody id="viewersTbody"></tbody>
       </table>
@@ -191,9 +192,29 @@ function runViewer() {
     "It keeps retrying automatically; go direct to the host's network, or ask the host to check their firewall/upload.";
 
   function setState(t) { stateBox.textContent = t || ""; }
-  function showError(t) {
-    errBox.textContent = t;
+  function showError(t, diag) {
+    errBox.textContent = t || "";
     retryRow.style.display = t ? "flex" : "none";
+    let d = document.getElementById("viewerDiag");
+    if (diag && t) {
+      if (!d) { d = document.createElement("div"); d.id = "viewerDiag"; d.className = "muted diag"; errBox.after(d); }
+      d.textContent = diag;
+    } else if (d) {
+      d.textContent = "";
+    }
+  }
+  async function diagFromStats() {
+    if (!pc) return "";
+    try {
+      const stats = await pc.getStats();
+      const local = {}, remote = {};
+      stats.forEach((r) => {
+        if (r.type === "local-candidate" && r.candidateType) local[r.candidateType] = (local[r.candidateType] || 0) + 1;
+        if (r.type === "remote-candidate" && r.candidateType) remote[r.candidateType] = (remote[r.candidateType] || 0) + 1;
+      });
+      const fmt = (o) => Object.entries(o).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
+      return `our candidates: ${fmt(local)}; remote candidates: ${fmt(remote)}`;
+    } catch (e) { return ""; }
   }
 
   function connect() {
@@ -240,7 +261,7 @@ function runViewer() {
 
   async function handleSignal(w, data) {
     if (data.error) {
-      showError(data.error);
+      showError(data.error, data.diag);
       return;
     }
     if (data.sdp && data.sdp.type === "offer") {
@@ -256,13 +277,13 @@ function runViewer() {
       pc.oniceconnectionstatechange = () => {
         if (pc !== conn) return; // stale event from a replaced peer
         const s = pc.iceConnectionState;
-        if (s === "failed") showError(FAIL_MSG);
+        if (s === "failed") diagFromStats().then((d) => showError(FAIL_MSG, d));
         if (s === "connected" || s === "completed") { showError(""); setState(""); }
       };
       pc.onconnectionstatechange = () => {
         if (pc !== conn) return; // stale event from a replaced peer
         if (pc.connectionState === "connected") { connectAt = performance.now(); startStats(); setState(""); }
-        if (pc.connectionState === "failed") showError(FAIL_MSG);
+        if (pc.connectionState === "failed") diagFromStats().then((d) => showError(FAIL_MSG, d));
       };
       await pc.setRemoteDescription(data.sdp);
       const answer = await pc.createAnswer();
@@ -441,7 +462,8 @@ function runHost() {
       tr.innerHTML =
         `<td>${esc(v.id)}</td><td>${esc(v.state)}</td><td>${esc(v.path)}</td>` +
         `<td>${ms(v, "rttMs")}</td><td>${v.loss || 0}</td><td>${ms(v, "jitterMs")}</td>` +
-        `<td>${ms(v, "gatherMs")}</td><td>${ms(v, "connectMs")}</td>`;
+        `<td>${ms(v, "gatherMs")}</td><td>${ms(v, "connectMs")}</td>` +
+        `<td>${esc((v.state === "failed" ? v.reason + " " : "") + (v.cands || ""))}</td>`;
       tbody.appendChild(tr);
     }
   }

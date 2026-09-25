@@ -400,6 +400,30 @@ the backend continues to handle signaling only.
 combinations, and every failure clearly identifies that a direct route doesn't exist. From
 v2 the recovery path is host-provided TURN; in v1 it is a clear terminal error.
 
+**M6 progress (2026-09-25):**
+
+- 1 multi-STUN ✅ — helper: 4 servers; browser viewer: 3.
+- 2 full trickle ✅ — helper and browser already trickled both ways; the CLI probe
+  (`webrtc-check`) only *received* candidates and relied on prflx discovery. It now sends
+  every local candidate like the browser (verified: pairs that were `prflx↔prflx` now resolve
+  to proper `host↔srflx` once candidates are exchanged).
+- 3 policy `all` ✅ · 4 gather-to-complete ✅ · 8 NAT test mode ✅ (matrix/).
+- 5/7 candidate & failure diagnostics ✅ — the helper now tracks both sides' candidate-type
+  histograms and, on failure, tells the viewer *and* the host table exactly why: which
+  candidate types each side saw, whether either side learned no srflx ("STUN/UDP restricted
+  there"), or "both reach STUN but no mutual hole-punch (symmetric/CGNAT)". Viewer page shows
+  the diagnostic line; `webrtc-check` RESULT carries `remoteCandidates` too.
+- 6 prefer-IPv6 ⚠️ investigated, no code: pion v4 has no candidate-type preference knob (only
+  global per-IP filters). Dual-stack ICE already offers both address families; where IPv4
+  cannot punch, IPv6 succeeds by selection. Documented, not forced.
+- 9 UPnP/PCP ⚠️ decision: needs a pre-bound UDP socket + goupnp so the mapped router port is
+  the one ICE actually uses. Recommend defer: the recorded matrix NOs are remote-side CGNAT,
+  which UPnP (helper-side) cannot help.
+- 10 combos: partial — loopback, IPv6 same-network, IPv4-only double-NAT → carrier CGNAT
+  (`NO`, fully diagnosed). Added `webrtc-check -no-stun` to log a deterministic
+  "STUN/UDP restricted" cell from any network. Two-normal-routers + UDP-restricted cells
+  still want a second network (user-side runs).
+
 ### Milestone 7 — Connection diagnostics and NAT regression suite
 
 Turn the diagnostics from Milestone 6 into a repeatable test suite so future networking changes

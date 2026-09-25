@@ -49,11 +49,15 @@ type peer struct {
 	state  string
 	path   string
 	reason string
+	// candidate diagnostics (under mu)
+	localCands []string // candidate types we gathered (host / srflx / prflx / relay)
+	remCands   []string // candidate types the viewer signaled
 	// timing (all under mu)
 	createdAt        time.Time // NewPeerConnection
 	offerAt          time.Time // offer sent to viewer
 	gatherCompleteAt time.Time // ICE gathering complete
 	connectAt        time.Time // PeerConnectionStateConnected
+	failAt           time.Time // PeerConnectionStateFailed
 	// stats (under mu, refreshed by rtcpLoop)
 	rttMs    int
 	loss     uint32 // cumulative RTP packets lost, from viewer Receiver Reports
@@ -301,9 +305,10 @@ func (h *helper) sendStatus() {
 		viewers = append(viewers, map[string]any{
 			"id": p.id, "state": p.state, "path": p.path, "reason": p.reason,
 			"rttMs": p.rttMs, "loss": p.loss, "jitterMs": p.jitterMs,
-			"gatherMs": msSince(p.createdAt, p.gatherCompleteAt),
-			"checkMs":  msSince(p.offerAt, p.connectAt),
+			"gatherMs":  msSince(p.createdAt, p.gatherCompleteAt),
+			"checkMs":   msSince(p.offerAt, p.connectAt),
 			"connectMs": msSince(p.createdAt, p.connectAt),
+			"cands":     "local " + candCounts(p.localCands) + " / viewer " + candCounts(p.remCands),
 		})
 		p.mu.Unlock()
 	}
@@ -429,9 +434,13 @@ func (h *helper) addViewer(id string) {
 		if c == nil {
 			return
 		}
+		p.mu.Lock()
+		p.localCands = append(p.localCands, c.Typ.String())
+		p.mu.Unlock()
+		init := c.ToJSON()
 		go func() {
 			<-p.ready
-			h.sendToViewer(id, map[string]any{"candidate": c.ToJSON()})
+			h.sendToViewer(id, map[string]any{"candidate": init})
 		}()
 	})
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
@@ -447,6 +456,7 @@ func (h *helper) addViewer(id string) {
 			p.reason = "disconnected"
 		case webrtc.PeerConnectionStateFailed:
 			p.reason = "direct connection failed (no route; TURN is v2+)"
+			p.failAt = time.Now()
 		case webrtc.PeerConnectionStateClosed:
 			p.reason = "closed"
 		}
@@ -462,8 +472,14 @@ func (h *helper) addViewer(id string) {
 					pair.Local.Typ, pair.Local.Address, pair.Local.Port, pair.Remote.Typ, pair.Remote.Address, pair.Remote.Port)
 			}
 		case webrtc.PeerConnectionStateFailed:
-			logf("viewer %s: FAILED - direct connection impossible (no relay in v1)", id)
-			h.sendToViewer(id, map[string]any{"error": "Direct connection failed — no direct route found to this viewer. golive v1 is direct-only (no relay); it will retry automatically if you reconnect."})
+			p.mu.Lock()
+			diag := p.failDiagLocked()
+			p.mu.Unlock()
+			logf("viewer %s: FAILED - direct connection impossible (no relay in v1): %s", id, diag)
+			h.sendToViewer(id, map[string]any{
+				"error": "Direct connection failed — no direct route found to this viewer. golive v1 is direct-only (no relay); it will retry automatically if you reconnect.",
+				"diag":  diag,
+			})
 			h.removeViewer(id)
 		}
 		h.sendStatus()
@@ -532,7 +548,9 @@ func (h *helper) onSignal(id string, raw json.RawMessage) {
 			p.pc.AddICECandidate(c)
 		}
 	case d.Candidate != nil:
+		typ := candType(d.Candidate.Candidate)
 		p.mu.Lock()
+		p.remCands = append(p.remCands, typ)
 		if !p.hasRem {
 			p.pending = append(p.pending, *d.Candidate)
 			p.mu.Unlock()
@@ -543,6 +561,70 @@ func (h *helper) onSignal(id string, raw json.RawMessage) {
 			logf("viewer %s: candidate: %v", id, err)
 		}
 	}
+}
+
+// candType extracts the candidate type ("host", "srflx", "prflx", "relay") from a
+// SDP candidate line, e.g. "candidate:1 1 UDP 2122252543 100.85.80.7 58857 typ host ...".
+func candType(line string) string {
+	if i := strings.Index(line, "typ "); i >= 0 {
+		rest := line[i+4:]
+		if j := strings.IndexByte(rest, ' '); j >= 0 {
+			rest = rest[:j]
+		}
+		return rest
+	}
+	return "?"
+}
+
+// candCounts renders a candidate-type histogram: "host 3, srflx 2".
+func candCounts(types []string) string {
+	c := map[string]int{}
+	for _, t := range types {
+		c[t]++
+	}
+	parts := []string{}
+	for _, t := range []string{"host", "srflx", "prflx", "relay"} {
+		if c[t] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", t, c[t]))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func hasSrflx(types []string) bool {
+	for _, t := range types {
+		if t == "srflx" {
+			return true
+		}
+	}
+	return false
+}
+
+// failDiagLocked explains a failed direct connection from the candidate evidence.
+// Caller holds p.mu.
+func (p *peer) failDiagLocked() string {
+	parts := []string{fmt.Sprintf("our candidates: %d (%s)", len(p.localCands), candCounts(p.localCands))}
+	parts = append(parts, fmt.Sprintf("viewer candidates: %d (%s)", len(p.remCands), candCounts(p.remCands)))
+	if t := msSince(p.offerAt, p.failAt); t >= 0 {
+		parts = append(parts, fmt.Sprintf("ICE ran %d ms", t))
+	}
+	if t := msSince(p.createdAt, p.gatherCompleteAt); t >= 0 {
+		parts = append(parts, fmt.Sprintf("gathered in %d ms", t))
+	}
+	switch {
+	case len(p.remCands) == 0:
+		parts = append(parts, "viewer sent no ICE candidates at all")
+	case !hasSrflx(p.remCands):
+		parts = append(parts, "viewer side learned no server-reflexive address (STUN/UDP restricted there)")
+	case !hasSrflx(p.localCands):
+		parts = append(parts, "our side learned no server-reflexive address (STUN/UDP restricted here)")
+	default:
+		parts = append(parts, "both sides reach STUN but the NATs did not mutual-hole-punch (symmetric/CGNAT usually)")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // rtcpLoop drains the viewer's RTCP so NACK/reports work, and keeps per-viewer
