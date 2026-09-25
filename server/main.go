@@ -458,6 +458,8 @@ func main() {
 	mux.HandleFunc("/auth/discord/login", availability(handleDiscordLogin))
 	mux.HandleFunc("/auth/discord/callback", availability(handleDiscordCallback))
 	mux.HandleFunc("/api/owner", handleOwnerInfo)
+	mux.HandleFunc("/api/pair/request", handlePairRequest)
+	mux.HandleFunc("/api/pair/claim", handlePairClaim)
 	mux.HandleFunc("/watch/", page)
 	mux.HandleFunc("/host/", page)
 	mux.HandleFunc("/api/helper/latest", handleHelperLatest)

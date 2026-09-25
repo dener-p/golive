@@ -570,8 +570,39 @@ Decisions (updated 2026-09-25 — **public** audience, agreed with the developer
 for the svt fallback) can install golive from the landing page, run the helper, get a URL, and
 stream to ≤10 viewers on a normal residential network — no terminal, no repo, no dev setup.
 
-Follow-ups explicitly parked outside v1: pairing codes / short-code host auth, tray icon +
-start-with-Windows, helper update hints in the host page, per-IP rate limits + longer room ids.
+Follow-ups explicitly parked outside v1: helper update hints in the host page, per-IP rate
+limits + longer room ids.
+
+### Milestone 10 — System tray + short-code pairing (on `feature/discord-oauth`)
+
+The printed key stays, but it stops being something a public host has to handle. Two slices:
+
+**System tray** (`-tray`, Windows; `getlantern/systray`, message loop on the main goroutine):
+
+- Menu: Open host page, Copy viewer link, a live **pairing-code** line (disabled label), New
+  pairing code, Start/Stop streaming, Quit.
+- Console mode (`-tray` off, the default) is unchanged — dev logs stay visible. Packaged
+  builds launch with `-tray` (installer shortcuts + a **Start-with-Windows** task). The tray
+  icon is rendered at runtime (PNG → ICO wrapper) — no binary asset to ship.
+
+**Short-code pairing** (replaces printed-key onboarding for public users):
+
+- `POST /api/pair/request {room, key}`: the helper proves physical access (the same key it
+  uses for `/ws`); the server mints a 6-char code (unambiguous alphabet, no 0/O/1/I/L) with a
+  5-minute TTL, single-use; a new request for the same room invalidates the old one. Codes
+  live in an in-memory expiring map — no store CRUD.
+- `POST /api/pair/claim {code, room}`: under a Discord session; a valid code claims the room
+  (`store.claim` with the code's key) — same trust as holding the printed key.
+- Host page: signed-in + room unclaimed + no key on the URL → inline **pairing-code input**
+  (from tray or console). The `?unclaimed=1` redirect is no longer a dead end.
+- Helper: fetches a code at boot and every 4 minutes; prints it and shows it in the tray.
+
+**Exit condition:** on a clean Windows PC — install, tray shows a code, open
+golive.puhl.dev/host, sign in with Discord, type the code, and the host page controls the
+room without the user ever seeing a key.
+
+Follow-ups parked: helper update hints in the host page, per-IP rate limits + longer room ids,
+windowsgui subsystem (no console flash) + log file for the packaged helper.
 
 ## 5.2 Updated implementation priority
 

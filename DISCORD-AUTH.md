@@ -96,8 +96,7 @@ env vars are absent).
 ## 6. Status & v2 follow-ups (as of 2026-09-25)
 
 The **claim was completed live**: room `2ea81f3707` is bound to the user's Discord account,
-persisted to Turso and verified by a direct read. The roadmap's last item is done on this
-branch. Identity is surfaced to viewers and hosts:
+persisted to Turso and verified by a direct read. Identity is surfaced to viewers and hosts:
 
 - Watch page shows a **streaming badge** (owner display name + Discord avatar) via the public
   `GET /api/owner?room=<id>` endpoint (`rooms.owner_name/owner_avatar`, backfilled from the
@@ -107,6 +106,20 @@ branch. Identity is surfaced to viewers and hosts:
   session cookie get an identity badge (server overlays session identity onto the helper's
   status rows at relay time); anonymous viewers show `–`. All verified live after a clean
   server+helper restart (durability: claim + session survive, keyless control intact).
+
+## 6.1 Short-code pairing (tray → account binding)
+
+Added with the tray milestone on `feature/discord-oauth`: the printed key is no longer the
+only onboarding path for a host.
+
+- The helper whips up a **6-char code** via `POST /api/pair/request {room, key}` (key = the
+  same physical-access proof the helper uses to join `/ws`), refreshes it every 4 minutes, and
+  shows it in the tray (and prints it in console mode).
+- On the host page (`golive.puhl.dev/host/<room>`), a Discord-signed-in user types the code;
+  `POST /api/pair/claim {code, room}` claims the room exactly like presenting the printed key
+  would. The user never sees the key.
+- Codes are single-use, expire after 5 minutes, live only in server memory, and only the
+  helper holding the room's key can mint them — so the code is as strong as the printed key.
 
 Follow-ups are v2 candidates:
 

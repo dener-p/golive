@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +109,7 @@ func main() {
 		autostart = flag.Bool("autostart", false, "start streaming as soon as connected")
 		rc        = flag.String("rc", "lcvbr", "amf rate control: default | cqp | lcvbr | vbr | cbr")
 		usage     = flag.String("usage", "low-latency", "amf usage: low-latency | transcoding")
+		tray      = flag.Bool("tray", false, "run with a system tray icon (open host page, copy link, pairing code, start/stop, quit); off = plain console")
 	)
 	flag.Parse()
 
@@ -123,11 +125,24 @@ func main() {
 	}
 	h.setupWebRTC()
 
+	// Tray mode owns the main goroutine (systray needs its message loop there) and boots the
+	// signaling/streaming loop in the background. Console mode boots inline.
+	if *tray && runtime.GOOS == "windows" {
+		serveTray(h, func() { boot(h, *autostart) })
+		return
+	}
+	boot(h, *autostart)
+}
+
+// boot runs everything the helper does once identity + WebRTC are ready: print the link,
+// start the pairing-code refresh, the stats loop, autostart, and the reconnect loop.
+func boot(h *helper, autostart bool) {
 	httpBase := strings.NewReplacer("ws://", "http://", "wss://", "https://").Replace(h.server)
 	fmt.Printf("\n  Viewer link : %s/watch/%s\n  Host page   : %s/host/%s?key=%s\n\n", httpBase, h.room, httpBase, h.room, h.key)
 
+	h.startPairRefresh()
 	go h.statsLoop()
-	if *autostart {
+	if autostart {
 		go func() { time.Sleep(time.Second); h.start(h.defaults) }()
 	}
 	h.run()

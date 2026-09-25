@@ -108,6 +108,12 @@
       <span class="muted" id="discordTxt"></span>
       <a id="discordBtn" href="#" style="margin-left:8px; text-decoration:none; padding:2px 10px; border:1px solid #5865F2; border-radius:6px; color:#5865F2; white-space:nowrap">Sign in with Discord</a>
     </div>
+    <div id="pairRow" class="row" style="display:none; margin-top:8px">
+      <span class="muted" style="white-space:nowrap">Pairing code:</span>
+      <input id="pairInput" style="width:110px; text-transform:uppercase" maxlength="6" placeholder="AB1CD2" autocomplete="off" spellcheck="false">
+      <button class="ghost" id="pairBtn">Bind room</button>
+      <span class="muted" id="pairMsg"></span>
+    </div>
     <div id="noHelper" class="row" style="display:none">
       <span class="muted">No native helper connected. Run it once on this machine, then reload:</span>
     </div>
@@ -434,13 +440,26 @@ function runHost() {
     const onPublic = location.origin === cfg.publicUrl;
     const login = `${cfg.publicUrl}/auth/discord/login?room=${encodeURIComponent(roomId)}${key ? "&key=" + encodeURIComponent(key) : ""}`;
 
+    // Pairing-code bind: the helper's 6-char code stands in for the printed key, so a public
+    // user can bind the room to their Discord account without ever handling the key.
+    const pairRow = document.getElementById("pairRow"), pairMsg = document.getElementById("pairMsg");
+    const showPair = () => { pairRow.style.display = "flex"; pairMsg.textContent = ""; };
+    document.getElementById("pairBtn").onclick = async () => {
+      const code = (document.getElementById("pairInput").value || "").trim().toUpperCase();
+      if (!code) return;
+      pairMsg.textContent = "binding…";
+      let r;
+      try {
+        r = await fetch("/api/pair/claim", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, room: roomId }) });
+      } catch { pairMsg.textContent = "server unreachable"; return; }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.claimed) { pairMsg.textContent = "Bound — reloading…"; location.reload(); return; }
+      pairMsg.textContent = r.status === 401 ? "Sign in with Discord first." : "Invalid or expired code — check the code shown by the helper.";
+    };
+
     if (denied) {
       txt.textContent = "This room is controlled by another Discord account — host auth denied.";
-      btn.style.display = "none";
-      return;
-    }
-    if (unclaimed) {
-      txt.textContent = "Could not bind this room: the printed room key is required to claim it. Open the host page with the key, then sign in.";
       btn.style.display = "none";
       return;
     }
@@ -454,7 +473,26 @@ function runHost() {
       btn.style.display = "none";
       return;
     }
+    if (unclaimed) {
+      // Sign-in returned here without a key: offer the pairing code path instead of a dead end.
+      if (onPublic) {
+        txt.textContent = "This room needs binding — enter the pairing code shown by the host helper (its tray or window).";
+        btn.style.display = "none";
+        showPair();
+      } else {
+        txt.textContent = "This room needs binding — open it on the public site:";
+        btn.href = `${cfg.publicUrl}/host/${encodeURIComponent(roomId)}`;
+        btn.textContent = "open it";
+      }
+      return;
+    }
     if (me && me.authenticated) {
+      if (onPublic && !key) {
+        txt.textContent = `Signed in as ${me.name} — enter the pairing code from the helper to bind this room to your account.`;
+        btn.style.display = "none";
+        showPair();
+        return;
+      }
       txt.textContent = key
         ? `Signed in as ${me.name} — sign in again to bind this room to your account (replaces the printed key).`
         : `Signed in as ${me.name}, but host control needs the page that carries the printed key.`;
@@ -462,8 +500,11 @@ function runHost() {
       txt.textContent = "This room is bound to a Discord account. Sign in to control it.";
     } else if (key) {
       txt.textContent = "Bind this room to your Discord account (replaces the printed key). You'll hand over the key during sign-in.";
+    } else if (onPublic) {
+      txt.textContent = "No one owns this room yet — sign in with Discord, then enter the pairing code shown by the host helper (its tray or window).";
+      showPair();
     } else {
-      txt.textContent = "This room is not bound to a Discord account yet. Open the host page with the room key to claim it.";
+      txt.textContent = "No one owns this room yet. Open the host page with the room key to claim it.";
       btn.style.display = "none";
       return;
     }

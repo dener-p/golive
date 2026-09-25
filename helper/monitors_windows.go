@@ -14,12 +14,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type monitorInfo struct {
-	Index   int    `json:"index"`
-	Name    string `json:"name"` // device path, e.g. \\?\DISPLAY1
-	Primary bool   `json:"primary"`
-}
-
 var (
 	user32             = windows.NewLazySystemDLL("user32.dll")
 	procEnumMonitors   = user32.NewProc("EnumDisplayMonitors")

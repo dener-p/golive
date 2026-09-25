@@ -26,6 +26,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+Name: "startup"; Description: "Start golive with &Windows"; GroupDescription: "Additional icons:"
 
 [Files]
 Source: "..\dist\golive\golive-helper.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -35,11 +36,12 @@ Source: "..\dist\golive\gstreamer\lib\*"; DestDir: "{app}\gstreamer\lib"; Flags:
 Source: "..\dist\golive\gstreamer\libexec\*"; DestDir: "{app}\gstreamer\libexec"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName} helper"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName} helper"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName} helper"; Filename: "{app}\{#MyAppExeName}"; Parameters: "-tray"
+Name: "{autodesktop}\{#MyAppName} helper"; Filename: "{app}\{#MyAppExeName}"; Parameters: "-tray"; Tasks: desktopicon
+Name: "{userstartup}\{#MyAppName} helper"; Filename: "{app}\{#MyAppExeName}"; Parameters: "-tray"; Tasks: startup
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} helper"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "-tray"; Description: "Launch {#MyAppName} helper"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\gstreamer"
