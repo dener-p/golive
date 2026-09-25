@@ -55,7 +55,7 @@ func setupTrayMenu(h *helper) {
 			mCode.SetTooltip("No server or no code yet")
 		} else {
 			mCode.SetTitle("Pairing code: " + code)
-			mCode.SetTooltip("Enter " + code + " on golive.puhl.dev/host to bind this room")
+			mCode.SetTooltip("Enter " + code + " on " + base + "/host to bind this room")
 		}
 	}
 	if c := h.currentCode(); c != "" {

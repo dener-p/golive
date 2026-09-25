@@ -37,9 +37,10 @@
     <p class="muted">You stream straight to each viewer — the server only introduces you. Windows only for v1.</p>
     <div class="dl" id="dlBox"><span class="muted">checking for the latest build…</span></div>
     <ol>
-      <li>Run the installer, then launch <b>golive helper</b> (a console window opens).</li>
-      <li>It prints your <b>viewer link</b> and <b>host page</b>. Keep the window open while streaming.</li>
-      <li>Share the viewer link. Pick your screen, press <b>Start streaming</b>.</li>
+      <li>Run the installer — <b>golive helper</b> starts quietly in your <b>system tray</b>.</li>
+      <li>Open the tray menu → <b>Open host page</b> (or go to <b>golive.puhl.dev/host</b>).</li>
+      <li>Sign in with Discord, type the <b>pairing code</b> shown in the tray, and the room is yours.</li>
+      <li>Share the viewer link from the tray menu. Pick your screen, press <b>Start streaming</b>.</li>
     </ol>
     <p class="muted">Needs Windows with an AV1-capable GPU (AMD Radeon 6000+, NVIDIA RTX 40/50) or a decent CPU
       (software encoder fallback) and ~4000 kbit/s upload per live viewer.</p>
@@ -48,10 +49,11 @@
   </div>
 
   <div class="panel">
-    <h2>No middleboxes, no accounts</h2>
+    <h2>No middleboxes</h2>
     <p class="muted">Direct WebRTC P2P with plain STUN — v1 deliberately has no relay/TURN, no recording, no SFU,
       no browser extensions. If a network pair can't connect directly, you'll see
-      <i>“Direct connection failed”</i>. Host identity is bound via a room key you control.</p>
+      <i>“Direct connection failed”</i>. The room key is yours; binding it to a Discord account is
+      optional and only names the owner.</p>
   </div>
 
   <p class="muted">Privacy: golive stores your room key and, when you bind a room to it, your Discord identity —

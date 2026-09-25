@@ -56,6 +56,7 @@ func (h *helper) refreshPair() {
 		ExpiresIn int    `json:"expiresIn"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&out) != nil || out.Code == "" {
+		logf("pairing code unavailable: HTTP %d", resp.StatusCode)
 		onPairCode("")
 		return
 	}

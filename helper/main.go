@@ -99,7 +99,7 @@ func envOr(key, def string) string {
 
 func main() {
 	var (
-		server    = flag.String("server", envOr("GOLIVE_SERVER", "wss://golive.puhl.dev/ws"), "signaling server base URL (ws:// or wss://, http(s) also accepted); GOLIVE_SERVER env override")
+		server    = flag.String("server", envOr("GOLIVE_SERVER", "wss://golive.puhl.dev"), "signaling server base URL (ws:// or wss://, http(s) also accepted); GOLIVE_SERVER env override")
 		room      = flag.String("room", "", "room id (default: generated once and remembered)")
 		key       = flag.String("key", "", "host key (default: generated once and remembered)")
 		enc       = flag.String("encoder", "auto", "auto | svt | nv | qsv | va | amf")
@@ -240,6 +240,7 @@ func (h *helper) session() error {
 	h.ws = ws
 	h.wsMu.Unlock()
 	logf("connected to %s as helper for room %s", h.server, h.room)
+	h.refreshPair() // (re)connect to the server => the room is registered again; mint a live pairing code
 	h.sendStatus()
 
 	for {
