@@ -298,22 +298,22 @@ stream ends. Discord OAuth ships last and is the natural v2 opener.
 
 ## 5.1 Implementation priority
 
-The recommended order is:
+The recommended order is (items with an arrow of evidence below the ladder are done):
 
 ```text
-Browser WebRTC proof
+Browser WebRTC proof (done)
         ↓
-Helper presence + control relay
+Helper presence + control relay (done)
         ↓
-Native capture + hardware AV1 + 1 viewer
+Native capture + hardware AV1 + 1 viewer (done)
         ↓
-Single encode → 2–3 viewers
+Single encode → 2–3 viewers (done)
         ↓
-Single encode → ~10 viewers
+Single encode → ~10 viewers (done)          ← soak: 10/10 viewers, media flowed to all, one encode (matrix/SOAK-RESULTS.md)
         ↓
-Direct-P2P diagnostics + NAT test mode
+Direct-P2P diagnostics + NAT test mode (done)   ← tools/webrtc-check + matrix/ ledger incl. real cross-network NO
         ↓
-Printed-key identity / anonymous viewers / UX polish
+Printed-key identity / anonymous viewers / UX polish (done)
         ↓
 Discord OAuth (hosts)        ← last item, first candidate for v2
         ↓
