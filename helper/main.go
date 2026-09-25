@@ -151,8 +151,10 @@ func boot(h *helper, autostart bool) {
 func loadIdentity(room, key string) (string, string) {
 	dir, _ := os.UserConfigDir()
 	f := filepath.Join(dir, "golive", "identity")
+	haveFile := false
 	if b, err := os.ReadFile(f); err == nil {
 		if p := strings.Fields(string(b)); len(p) == 2 {
+			haveFile = true
 			if room == "" {
 				room = p[0]
 			}
@@ -162,14 +164,22 @@ func loadIdentity(room, key string) (string, string) {
 		}
 	}
 	rnd := func(n int) string { b := make([]byte, n); rand.Read(b); return hex.EncodeToString(b) }
+	generated := false
 	if room == "" {
 		room = rnd(5) // 10 chars
+		generated = true
 	}
 	if key == "" {
 		key = rnd(8)
+		generated = true
 	}
-	os.MkdirAll(filepath.Dir(f), 0o700)
-	os.WriteFile(f, []byte(room+" "+key), 0o600)
+	// Persist only identities that were generated here (no file, or only flag-less first
+	// run). Explicit -room/-key flags are a transient override and must never overwrite the
+	// stored identity — otherwise one off-run would silently rebrand the user's room.
+	if generated && !haveFile {
+		os.MkdirAll(filepath.Dir(f), 0o700)
+		os.WriteFile(f, []byte(room+" "+key), 0o600)
+	}
 	return room, key
 }
 

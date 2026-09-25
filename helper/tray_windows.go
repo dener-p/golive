@@ -7,9 +7,9 @@ package main
 
 import (
 	"bytes"
+	_ "embed" // go:embed directive support
 	"image"
-	"image/color"
-	"image/png"
+	_ "image/png" // register the PNG decoder for image.DecodeConfig below
 	"os/exec"
 	"strings"
 
@@ -95,51 +95,23 @@ func copyText(s string) {
 	exec.Command("powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", s).Run()
 }
 
-// goliveIcon renders a 32x32 tray icon (green rounded square with a white play triangle)
-// at runtime — no binary asset to ship — and wraps it as a Vista+ PNG-compressed ICO.
+// The tray icon is the site favicon (keep helper/assets/favicon.png in sync with
+// server/public/favicon.png — same art, so the tray matches the browser tabs).
+//
+//go:embed assets/favicon.png
+var faviconPNG []byte
+
+// goliveIcon wraps the favicon PNG as a Vista+ PNG-compressed ICO for the tray.
 func goliveIcon() []byte {
-	const S = 32
-	img := image.NewRGBA(image.Rect(0, 0, S, S))
-	green := color.RGBA{0x2f, 0x9e, 0x44, 0xff}
-	white := color.RGBA{0xff, 0xff, 0xff, 0xff}
-
-	// rounded square body
-	r := 6
-	for y := 0; y < S; y++ {
-		for x := 0; x < S; x++ {
-			dx, dy := 0, 0
-			switch {
-			case x < r && y < r:
-				dx, dy = r-x, r-y
-			case x >= S-r && y < r:
-				dx, dy = x-(S-r-1), r-y
-			case x < r && y >= S-r:
-				dx, dy = r-x, y-(S-r-1)
-			case x >= S-r && y >= S-r:
-				dx, dy = x-(S-r-1), y-(S-r-1)
-			}
-			if dx*dx+dy*dy <= r*r || (dx == 0 && dy == 0) {
-				img.Set(x, y, green)
-			}
-		}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(faviconPNG))
+	if err != nil {
+		return nil // icons are cosmetic; a nil icon just means the default is shown
 	}
-
-	// white play triangle: points (12,9) (12,23) (24,16)
-	for y := 9; y <= 23; y++ {
-		w := (y - 9) * 15 / 28 // half-width grows from 0 at y=9 to 12 at y=23 (x 12..24)
-		for x := 12; x <= 12+w; x++ {
-			img.Set(x, y, white)
-		}
-	}
-
-	var pngBuf bytes.Buffer
-	png.Encode(&pngBuf, img)
-	blob := pngBuf.Bytes()
-
+	blob := faviconPNG
 	ico := new(bytes.Buffer)
 	ico.Write([]byte{0, 0, 1, 0, 1, 0})                            // ICONDIR: reserved, type=1, count=1
-	ico.WriteByte(S)                                               // width
-	ico.WriteByte(S)                                               // height
+	ico.WriteByte(byte(cfg.Width))                                 // width
+	ico.WriteByte(byte(cfg.Height))                                // height
 	ico.Write([]byte{0, 0})                                        // color count, reserved
 	ico.Write([]byte{1, 0, 32, 0})                                 // planes=1, bitCount=32
 	ico.Write([]byte{byte(len(blob)), byte(len(blob) >> 8), 0, 0}) // bytesInRes (LE u32)
