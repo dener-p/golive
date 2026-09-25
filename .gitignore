@@ -20,6 +20,10 @@ helper/golive-helper
 *.db-wal
 *.db-shm
 
+# Secrets
+.env
+server/.env
+
 # OS junk
 Thumbs.db
 Desktop.ini

@@ -26,12 +26,20 @@ No bot, no intents, no permissions — the app only needs the `identify` scope.
 ```
 
 Flags/env:
-| flag | env fallback1 | meaning |
+| flag | env fallback | meaning |
 |---|---|---|
 | `-discord-id` | `GOLIVE_DISCORD_ID` | Discord client id |
 | `-discord-secret` | `GOLIVE_DISCORD_SECRET` | Discord client secret |
 | `-public-url` | `GOLIVE_PUBLIC_URL` | base for callback + post-login redirect (default `https://golive.puhl.dev`) |
-| `-db` | `GOLIVE_DB` | SQLite path (default `golive.db`) |
+| `-db` | `GOLIVE_DB` | local SQLite path (default `golive.db`; ignored when Turso is configured) |
+| `-turso-url` | `GOLIVE_DB_URL` | Turso/libSQL URL — set with the token to use the remote store |
+| `-turso-token` | `GOLIVE_TURSO_TOKEN` | Turso auth token |
+
+The server auto-loads a `.env` file (exe dir, then `server/.env` in the working dir, then
+`.env`) — plain `KEY=VALUE` lines, already-set environment variables win. The project's
+`server/.env` holds `GOLIVE_DISCORD_ID`, `GOLIVE_DISCORD_SECRET`, `GOLIVE_TURSO_TOKEN`,
+`GOLIVE_DB_URL` (gitignored). Turso mode activates when both `GOLIVE_DB_URL` and
+`GOLIVE_TURSO_TOKEN` are present; otherwise the server falls back to the local SQLite file.
 
 Without `-discord-id`/`-discord-secret` the `/auth/*` routes are disabled and the host
 gate behaves exactly as v1 (printed key only), so the existing stack keeps working
@@ -70,17 +78,24 @@ Failure cases the page explains:
 ## 5. Storage & Turso
 
 `server/store.go` persists two tables — `rooms` (id, host_key, owner, claimed_at) and
-`sessions` (token, discord info, expiry) — via `modernc.org/sqlite` (pure Go, so the
-server still cross-compiles to Linux for the notebook). The schema is plain SQLite.
+`sessions` (token, discord info, expiry). Schema and queries are plain SQLite; the backend
+is picked at startup:
 
-Moving to **Turso** later is a driver + DSN swap: point the same queries at a libSQL
-endpoint (Turso speaks the SQLite wire protocol). Expected friction points: the `file:` DSN
-pragma syntax, `database/sql` compatibility of the libSQL driver, and WAL on a remote
-database. Nothing in the query layer assumes a local file.
+- **Local** (default): `modernc.org/sqlite` — pure Go (no CGO), so the server still
+  cross-compiles to Linux for the notebook.
+- **Turso** (active on the live stack): `github.com/tursodatabase/libsql-client-go` —
+  also pure Go; talks Hrana over HTTPS/WSS to `golive-dener-p.aws-us-east-1.turso.io`.
+  The auth token goes through `NewConnector(url, WithAuthToken(...))` — never in the URL
+  (the driver rejects `authToken` query params).
+
+Switching back to a local file is just unsetting the Turso env vars. Verified against the
+live Turso DB by `go test ./server -run TestStore` (both backends round-trip
+saveHostKey/claim/owner/session; the Turso test cleans up its own rows and skips when the
+env vars are absent).
 
 ## 6. What's not done yet (on this branch)
 
-- End-to-end validation against the real Discord authorization server (needs the app +
-  creds from step 1).
+- The final browser click-through (claim + keyless control) — everything up to the Discord
+  redirect is verified; the authorize/consent round trip needs a human in a browser.
 - Ownership transfer / release; room unclaim.
 - Avatar rendering on the host panel (identity line shows the account name only).

@@ -464,18 +464,20 @@ Account-based host gate that replaces the printed key (M5.5 / roadmap last item)
   Afterwards the owner controls the room keyless from the public host page; the WS host
   gate accepts key **or** owner session. Non-owners get `?denied=1`, missing key
   `?unclaimed=1`.
-- Persistence ✅ — SQLite (`modernc.org/sqlite`, pure Go, cross-compiles to Linux) via
-  `server/store.go`: `rooms` (host_key upserted at every helper handshake + owner) and
-  `sessions`. Turso-ready: same queries, driver+DSN swap (documented in DISCORD-AUTH.md).
+- Persistence ✅ — live on **Turso** (`github.com/tursodatabase/libsql-client-go`, pure
+  Go, Hrana over HTTPS) with a local `modernc.org/sqlite` fallback; backend chosen by
+  `GOLIVE_DB_URL`+`GOLIVE_TURSO_TOKEN`. `rooms` (host_key upserted at every helper
+  handshake + owner) and `sessions`. `server/store_test.go` round-trips both backends
+  against the real Turso DB. server/.env auto-loads GOLIVE_* (gitignored).
 - Graceful fallback ✅ — no `-discord-id/-discord-secret` → `/auth/*` 404, printed-key
   gate unchanged (verified: config `enabled:false`, host WS still rejects without key).
 - UI ✅ — host panel Discord banner: bind / sign-in-again / owner / denied / unclaimed
   states; routes to the public page when opened on localhost. `-db`, env fallbacks
   (`GOLIVE_*`) documented.
-- ⏳ End-to-end validation — needs the user's Discord application (client id/secret +
-  registered redirect URI). Not yet tested against the real Discord authorization server;
-  local flow verified: 302 to authorize, bad-state 400, config/me endpoints. Owner
-  transfer/avatar rendering listed as follow-ups in DISCORD-AUTH.md.
+- ⏳ Final step — the browser click-through: sign into Discord on the public host page and
+  claim room `2ea81f3707`. Everything up to the Discord redirect is verified on the live
+  stack (Turso-backed, oauth enabled). Owner transfer/avatar listed as follow-ups in
+  DISCORD-AUTH.md.
 
 1. Add a host/viewer diagnostics panel showing the final transport path:
    `direct host`, `direct srflx`, `direct prflx`, or `TURN relay` (the last only exists from v2).

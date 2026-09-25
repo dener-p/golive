@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,39 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// loadEnv reads a .env file (KEY=VALUE lines, # comments, optional quotes) into the
+// process environment. Already-set variables win. Looked up next to the executable,
+// then server/.env, then .env in the working directory. Missing file is fine.
+func loadEnv() {
+	for _, p := range []string{
+		filepath.Join(filepath.Dir(os.Args[0]), ".env"),
+		"server/.env",
+		".env",
+	} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			eq := strings.Index(line, "=")
+			if eq <= 0 {
+				continue
+			}
+			k := strings.TrimSpace(line[:eq])
+			v := strings.Trim(strings.TrimSpace(line[eq+1:]), `"'`)
+			if os.Getenv(k) == "" {
+				os.Setenv(k, v)
+			}
+		}
+		log.Printf("loaded env file: %s", p)
+		return
+	}
 }
 
 //go:embed index.html
@@ -321,18 +356,34 @@ func cleanup(id string, r *room) {
 }
 
 func main() {
+	loadEnv()
 	addr := flag.String("addr", ":8080", "listen address")
 	discordID := flag.String("discord-id", envOr("GOLIVE_DISCORD_ID", ""), "Discord OAuth client id (enables Discord host login)")
 	discordSecret := flag.String("discord-secret", envOr("GOLIVE_DISCORD_SECRET", ""), "Discord OAuth client secret")
 	publicURL := flag.String("public-url", envOr("GOLIVE_PUBLIC_URL", "https://golive.puhl.dev"), "public base URL for the callback + post-login redirects")
-	dbPath := flag.String("db", envOr("GOLIVE_DB", "golive.db"), "SQLite path for rooms/sessions (Discord auth persistence)")
+	dbPath := flag.String("db", envOr("GOLIVE_DB", "golive.db"), "SQLite path for rooms/sessions (local store)")
+	tursoURL := flag.String("turso-url", envOr("GOLIVE_DB_URL", ""), "Turso/libSQL URL; enables the remote store (token via GOLIVE_TURSO_TOKEN)")
+	tursoToken := flag.String("turso-token", envOr("GOLIVE_TURSO_TOKEN", ""), "Turso auth token")
 	flag.Parse()
 
+	if (*tursoURL == "") != (*tursoToken == "") {
+		log.Fatal("both -turso-url and -turso-token are required together (or neither)")
+	}
+
 	var err error
-	if db, err = openStore(*dbPath); err != nil {
+	if db, err = openStore(*dbPath, *tursoURL, *tursoToken); err != nil {
 		log.Fatalf("open store: %v", err)
 	}
 	defer db.close()
+	if *tursoURL != "" {
+		host := *tursoURL
+		if u, perr := url.Parse(*tursoURL); perr == nil && u.Host != "" {
+			host = u.Host
+		}
+		log.Printf("store: turso (%s)", host)
+	} else {
+		log.Printf("store: sqlite %s", *dbPath)
+	}
 	oauthCfg = newOAuthConfig(*discordID, *discordSecret, *publicURL)
 	if oauthCfg.enabled {
 		log.Printf("discord oauth enabled; redirect_uri=%s", oauthCfg.redirectURI)

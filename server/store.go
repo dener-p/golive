@@ -14,8 +14,10 @@ package main
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"time"
 
+	tursodb "github.com/tursodatabase/libsql-client-go/libsql"
 	_ "modernc.org/sqlite"
 )
 
@@ -23,7 +25,17 @@ type store struct {
 	db *sql.DB
 }
 
-func openStore(path string) (*store, error) {
+// openStore picks the backend: a Turso/libSQL URL (with token) when given, otherwise a
+// local SQLite file. Either way every query below is plain SQLite, so remote/local
+// behaviour and the schema are identical.
+func openStore(path, tursoURL, tursoToken string) (*store, error) {
+	if tursoURL != "" {
+		return openTurso(tursoURL, tursoToken)
+	}
+	return openLocal(path)
+}
+
+func openLocal(path string) (*store, error) {
 	// DSN: file: + toSlash so Windows backslashes don't confuse the URI parser.
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
@@ -33,6 +45,24 @@ func openStore(path string) (*store, error) {
 	s := &store{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// openTurso connects to a Turso/libSQL database over its HTTP(S) wire protocol
+// (libsql-client-go, pure Go). The token goes through WithAuthToken, never the URL.
+func openTurso(rawURL, token string) (*store, error) {
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "https://" + rawURL
+	}
+	conn, err := tursodb.NewConnector(rawURL, tursodb.WithAuthToken(token))
+	if err != nil {
+		return nil, err
+	}
+	s := &store{db: sql.OpenDB(conn)}
+	s.db.SetMaxOpenConns(4) // remote: more heads beat the round-trip latency
+	if err := s.migrate(); err != nil {
 		return nil, err
 	}
 	return s, nil
