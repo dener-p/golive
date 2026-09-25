@@ -55,6 +55,11 @@ webrtc-check -server https://golive.puhl.dev -room <room> -seconds 20
 webrtc-check -server https://golive.puhl.dev -room <room> -seconds 20 -verbose   # show all local candidates
 ```
 
+The probe is pure Go (pion) — cross-compile it for any machine:
+`GOOS=linux GOARCH=amd64 go build -o bin/webrtc-check-linux ./tools/webrtc-check`
+(Windows: `.exe`; the `bin/` folder is gitignored, so copy the binary or build on target.
+On Linux it may need `chmod +x` after a chat/cloud transfer.)
+
 `run.ps1` parses the JSON result and appends a row to `RESULTS.md`. A `NO` (non-zero
 exit) row is still appended — failures are data.
 
