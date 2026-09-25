@@ -542,7 +542,8 @@ Decisions (updated 2026-09-25 — **public** audience, agreed with the developer
 - **Downloads served by the backend** (`/api/helper/latest` + `/api/helper/download`), surfaced
   on a small landing page at `/` — no GitHub account needed by end users.
 - **Code signing: to do** (Azure Trusted Signing or an EV cert — the SmartScreen warning is a
-  real conversion-killer for strangers).
+  real conversion-killer for strangers). Decision 2026-09-25: SmartScreen warning accepted
+  for now and documented on the landing page; signing is first-class on the follow-up list.
 - **TURN stays deferred** to v2/v3 (unchanged).
 
 1. Helper reachability: default `-server` = `wss://golive.puhl.dev/ws`, with `GOLIVE_SERVER`
