@@ -6,10 +6,12 @@
 // Also opens a host-role socket (needs the room key) to print live host status,
 // including the per-viewer diagnostics the helper now reports.
 //
-// Use it as the seed of the NAT regression suite: run the helper on one network,
-// this tool on another, and compare "direct vs failed" outcomes.
+// Matrix mode: run the helper on one network, this tool on another, compare
+// "direct vs failed". Use -label to tag which side this run came from and -json for a
+// single machine-readable line (what matrix/run.ps1 parses).
 //
 //	go run ./tools/webrtc-check -server http://localhost:8080 -room <id> -key <hostKey>
+//	go run ./tools/webrtc-check -server https://xxxx.trycloudflare.com -room <id> -label "B=phone-hotspot-4g" -json
 package main
 
 import (
@@ -20,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,11 +36,18 @@ func main() {
 	room := flag.String("room", "", "room id")
 	key := flag.String("key", "", "host key (needed for host-role status)")
 	secs := flag.Int("seconds", 8, "how long to receive before disconnecting")
+	label := flag.String("label", "", "free-text tag for this run (e.g. 'B=phone-hotspot-4g')")
+	jsonOut := flag.Bool("json", false, "print RESULT as a single JSON line (what matrix/run.ps1 parses)")
+	verbose := flag.Bool("verbose", false, "print gathered local candidates and the selected pair")
 	flag.Parse()
 	if *room == "" {
 		log.Fatal("-room is required")
 	}
 	wsBase := strings.NewReplacer("http://", "ws://", "https://", "wss://").Replace(strings.TrimRight(*server, "/"))
+	start := time.Now()
+
+	// candidate / pair / state tracking for the matrix diagnostics
+	dc := &diag{}
 
 	// Host role: prints live status (helper-supplied diagnostics).
 	stopStatus := make(chan struct{})
@@ -110,14 +120,13 @@ func main() {
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithInterceptorRegistry(ir))
 
 	var (
-		pkts  atomic.Int64
-		byts  atomic.Int64
-		keyf  atomic.Int64
+		pkts   atomic.Int64
+		byts   atomic.Int64
+		keyf   atomic.Int64
 		connAt atomic.Int64 // unix ms when connected
 	)
-	start := time.Now()
 
-	var pc *webrtc.PeerConnection
+	// candidate / pair / state tracking for the matrix diagnostics
 	pc, err := api.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{{URLs: []string{
 			"stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478",
@@ -127,8 +136,46 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pc.OnTrack(func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+
+	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			return
+		}
+		dc.addLocal(c)
+		if *verbose {
+			fmt.Printf("local %s %s:%d\n", c.Typ, c.Address, c.Port)
+		}
+	})
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		fmt.Printf("ICE: %s\n", s)
+		dc.setIce(s.String())
+	})
+	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		fmt.Printf("PC: %s\n", s)
+		dc.setConn(s.String())
+		if s == webrtc.PeerConnectionStateConnected {
+			connAt.Store(time.Now().UnixMilli())
+		}
+	})
+	pc.OnTrack(func(t *webrtc.TrackRemote, r *webrtc.RTPReceiver) {
 		fmt.Printf("track: %s\n", t.Codec().MimeType)
+		// poll the selected candidate pair off the receiving transport (same API the helper uses)
+		if tr := r.Transport(); tr != nil {
+			it := tr.ICETransport()
+			if it != nil {
+				go func() {
+					for {
+						if p, err := it.GetSelectedCandidatePair(); err == nil && p != nil {
+							dc.setPair(p)
+							if *verbose {
+								fmt.Printf("pair selected: %s %s:%d <-> %s %s:%d\n", p.Local.Typ, p.Local.Address, p.Local.Port, p.Remote.Typ, p.Remote.Address, p.Remote.Port)
+							}
+						}
+						time.Sleep(300 * time.Millisecond)
+					}
+				}()
+			}
+		}
 		go func() {
 			buf := make([]byte, 1500)
 			for {
@@ -143,15 +190,6 @@ func main() {
 				pkts.Add(1)
 			}
 		}()
-	})
-	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
-		fmt.Printf("ICE: %s\n", s)
-	})
-	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		fmt.Printf("PC: %s\n", s)
-		if s == webrtc.PeerConnectionStateConnected {
-			connAt.Store(time.Now().UnixMilli())
-		}
 	})
 
 	u := fmt.Sprintf("%s/ws?role=viewer&room=%s", wsBase, url.QueryEscape(*room))
@@ -214,10 +252,124 @@ func main() {
 	<-readDone
 
 	dur := time.Since(start).Seconds()
-	fmt.Printf("\nRESULT viewer=%s direct=%v connectedMs=%d rtpPkts=%d keyframes=%d bytes=%d duration=%.1fs rate=%.0f pps\n",
-		*room, connAt.Load() > 0, connAt.Load()-start.UnixMilli(), pkts.Load(), keyf.Load(), byts.Load(), dur,
-		float64(pkts.Load())/dur)
+	direct := connAt.Load() > 0
+	connMs := int64(0)
+	if direct {
+		connMs = connAt.Load() - start.UnixMilli()
+	}
+	r := result{
+		Label:          *label,
+		Room:           *room,
+		Direct:         direct,
+		ICEFinal:       dc.ice,
+		ConnFinal:      dc.conn,
+		Path:           dc.path(),
+		Local:          dc.lcl(),
+		Remote:         dc.rcl(),
+		LocalCandidate: dc.localCands(),
+		SrflxLearned:   dc.srflx,
+		ConnectedMs:    connMs,
+		RTPPkts:        pkts.Load(),
+		Keyframes:      keyf.Load(),
+		Bytes:          byts.Load(),
+		Duration:       dur,
+		PPS:            float64(pkts.Load()) / dur,
+	}
+	if *jsonOut {
+		b, _ := json.Marshal(r)
+		fmt.Printf("RESULT %s\n", b)
+	} else {
+		extra := ""
+		if r.Path != "" {
+			extra += " path=" + r.Path
+		}
+		if r.Label != "" {
+			extra += " label=" + r.Label
+		}
+		if r.ICEFinal != "" {
+			extra += " ice=" + r.ICEFinal
+		}
+		fmt.Printf("RESULT viewer=%s direct=%v connectedMs=%d rtpPkts=%d keyframes=%d bytes=%d duration=%.1fs rate=%.0f pps%s\n",
+			*room, direct, connMs, pkts.Load(), keyf.Load(), byts.Load(), dur, float64(pkts.Load())/dur, extra)
+	}
 	if pkts.Load() == 0 {
 		os.Exit(1)
 	}
+}
+
+// diag collects ICE state, candidates and the selected pair (all read at the end).
+type diag struct {
+	mu     sync.Mutex
+	ice    string // final ICEConnectionState
+	conn   string // final PeerConnectionState
+	local  []string
+	pair   string // "<ltype> <laddr>:<lport> <-> <rtype> <raddr>:<rport>"
+	lt, rt string // selected pair types only
+	laddr  string
+	raddr  string
+	srflx  bool // learned a server-reflexive local address
+}
+
+func (d *diag) setIce(s string)   { d.mu.Lock(); d.ice = s; d.mu.Unlock() }
+func (d *diag) setConn(s string)  { d.mu.Lock(); d.conn = s; d.mu.Unlock() }
+func (d *diag) addLocal(c *webrtc.ICECandidate) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.local = append(d.local, fmt.Sprintf("%s %s:%d", c.Typ, c.Address, c.Port))
+	if c.Typ == webrtc.ICECandidateTypeSrflx {
+		d.srflx = true
+	}
+}
+func (d *diag) setPair(p *webrtc.ICECandidatePair) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lt, d.rt = p.Local.Typ.String(), p.Remote.Typ.String()
+	d.laddr = fmt.Sprintf("%s:%d", p.Local.Address, p.Local.Port)
+	d.raddr = fmt.Sprintf("%s:%d", p.Remote.Address, p.Remote.Port)
+	d.pair = fmt.Sprintf("%s %s <-> %s %s", d.lt, d.laddr, d.rt, d.raddr)
+}
+func (d *diag) path() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pair
+}
+func (d *diag) lcl() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.laddr
+}
+func (d *diag) rcl() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.raddr
+}
+func (d *diag) localCands() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.local) == 0 {
+		return nil
+	}
+	out := make([]string, len(d.local))
+	copy(out, d.local)
+	return out
+}
+
+// result is the machine-readable outcome of one test run.
+type result struct {
+	Label          string   `json:"label,omitempty"`
+	Room           string   `json:"room"`
+	Direct         bool     `json:"direct"`
+	ICEFinal       string   `json:"iceFinal,omitempty"`
+	ConnFinal      string   `json:"connFinal,omitempty"`
+	Path           string   `json:"path,omitempty"`
+	Local          string   `json:"local,omitempty"`
+	Remote         string   `json:"remote,omitempty"`
+	LocalCandidate []string `json:"localCandidates,omitempty"`
+	SrflxLearned   bool     `json:"srflxLearned"`
+	ConnectedMs    int64    `json:"connectedMs"`
+	RTPPkts        int64    `json:"rtpPkts"`
+	Keyframes      int64    `json:"keyframes"`
+	Bytes          int64    `json:"bytes"`
+	Duration       float64  `json:"duration"`
+	PPS            float64  `json:"pps"`
 }

@@ -99,10 +99,15 @@ RESULT viewer=2ea81f3707 direct=true connectedMs=1263 rtpPkts=1171 keyframes=4 r
 ```
 
 What I still cannot verify here: an actual browser tab decoding AV1 via WebCodecs/WebRTC
-(needs you to open the viewer link in a real Chrome) and real-world NAT combinations
-(loopback always connects). For NAT testing, `tools/webrtc-check` is the stand-in viewer —
-run the helper on one network and the check tool on another and compare the `direct=`
-result (see "Development tools" below).
+(needs you to open the viewer link in a real Chrome). Real-world NAT combinations are
+exercised with the NAT test matrix (`matrix/`): the signaling server is publicly reachable
+at `https://golive.puhl.dev` (tunneled to this box), media stays P2P, and
+`tools/webrtc-check` measures direct-vs-failed from any network. One-command runner:
+
+    .\matrix\run.ps1 -Server https://golive.puhl.dev -Room <room> -Label "B=phone-hotspot-4g" -Key <key>
+
+Rows are appended to `matrix/RESULTS.md`; see `matrix/README.md` for the procedure and
+how to read the rows.
 
 ## Encoder defaults & tuning (measured on the RX 9060 XT)
 
