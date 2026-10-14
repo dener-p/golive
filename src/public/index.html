@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebRTC AV1 + IPv6 Test</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>WebRTC AV1 + IPv6 test</h1>
+    <p class="sub">Connectivity/codec experiment. Anyone with the room URL can join &mdash; don't share private content.</p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <button id="startBtn" class="primary">Start sharing</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <label class="check"><input type="checkbox" id="preferAv1" checked> Prefer AV1</label>
+      <span id="role" class="badge"></span>
+    </section>
+
+    <section id="linkRow" class="link-row" hidden>
+      <input id="roomUrl" type="text" readonly>
+      <button id="copyBtn">Copy link</button>
+    </section>
+
+    <div id="alert" class="alert" hidden></div>
+
+    <section class="video-wrap">
+      <video id="video" autoplay playsinline muted controls></video>
+    </section>
+
+    <section class="panel">
+      <h2>Diagnostics</h2>
+      <dl>
+        <dt>Signaling</dt><dd id="dSignaling">idle</dd>
+        <dt>ICE connection state</dt><dd id="dIce">new</dd>
+        <dt>Peer connection state</dt><dd id="dPc">&ndash;</dd>
+        <dt>AV1 support (this browser)</dt><dd id="dSupport">&ndash;</dd>
+        <dt>Selected candidate pair</dt><dd id="dPair">&ndash;</dd>
+        <dt>Path</dt><dd id="dPath">&ndash;</dd>
+        <dt>Round-trip time</dt><dd id="dRtt">&ndash;</dd>
+        <dt>Video codec (actual)</dt><dd id="dCodec">&ndash;</dd>
+        <dt>Resolution</dt><dd id="dRes">&ndash;</dd>
+        <dt>Frame rate</dt><dd id="dFps">&ndash;</dd>
+        <dt>Bitrate</dt><dd id="dBitrate">&ndash;</dd>
+        <dt>Codec implementation</dt><dd id="dImpl">&ndash;</dd>
+        <dt>Gathered candidates</dt><dd id="dCands">&ndash;</dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

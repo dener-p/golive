@@ -1,0 +1,17 @@
+{
+  "name": "webrtc-av1-ipv6-test",
+  "version": "0.1.0",
+  "description": "Browser screen-share connectivity/codec experiment: WebRTC, AV1 preference, IPv6 diagnostics",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test:signaling": "node test-signaling.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
