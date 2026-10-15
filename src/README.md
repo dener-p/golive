@@ -153,8 +153,21 @@ Before starting, the streamer chooses:
     silent; falls back to video-only when unsupported.
   - Firefox and Safari do not offer screen-share audio.
   When no audio track comes back, the app logs why and continues video-only.
-- **Reconnect**: the client reopens the signaling socket with backoff while it
-  is live, so brief Worker restarts or network blips recover on their own.
+- **Reconnect**: the client reopens the signaling socket with exponential backoff
+  (1s→15s) while it is live, so brief Worker restarts or network blips recover on
+  their own. The backoff only resets once a socket has been stable for ~10s
+  (`SIGNAL_STABLE_MS`), so a connection that opens and immediately drops keeps
+  backing off rather than reconnecting every second — which matters because each
+  retry re-runs a full offer plus candidate exchange, and every WebSocket message
+  is a Durable Object request.
+- **Signaling efficiency**: a connection's ICE candidates are coalesced and sent
+  as one message per ~100ms window (`queueLocalCandidate`/`CANDIDATE_FLUSH_MS`)
+  instead of one message per candidate, cutting the dominant source of Durable
+  Object requests several-fold. The receiver accepts either a batch or a single
+  candidate, so the format is backward compatible. For context, Cloudflare counts
+  each incoming WebSocket message as a Durable Object request (at a 20:1 ratio for
+  compute-requests billing, though metrics show actual counts); outgoing messages
+  and protocol pings are not charged.
 - **Diagnostics**: beyond the selected candidate pair and the negotiated codec,
   the panel shows packet loss, jitter and (on a viewer) freezes, and the
   streamer sees the **total upload** across all viewers — the number that decides

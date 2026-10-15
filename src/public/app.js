@@ -50,6 +50,10 @@ const conns = new Map(); // peerId -> connection state
 // Reconnect state for the signaling socket (viewers wait, streamers resume).
 let reconnectTimer = null;
 let reconnectDelay = 1000;
+// The backoff only resets once a socket has stayed up this long, so a connection
+// that opens then immediately drops keeps backing off instead of retrying every
+// second (each retry re-runs a full offer + candidate exchange).
+const SIGNAL_STABLE_MS = 10000;
 let signalingRoom = null;
 let signalingRole = null;
 
@@ -492,9 +496,12 @@ function connectSignaling(room, role) {
     const sock = new WebSocket(wsUrl(room, role));
     ws = sock;
     let settled = false;
+    // Reset the reconnect backoff only after the socket has been stable for a
+    // while; see SIGNAL_STABLE_MS.
+    let stableTimer = null;
     sock.onopen = () => {
-      reconnectDelay = 1000;
       setField("dSignaling", t("signal.connected"), "ok");
+      stableTimer = setTimeout(() => { stableTimer = null; reconnectDelay = 1000; }, SIGNAL_STABLE_MS);
       if (!settled) { settled = true; resolve(); }
     };
     sock.onerror = () => {
@@ -505,6 +512,7 @@ function connectSignaling(room, role) {
     sock.onclose = () => {
       if (ws !== sock) return;
       ws = null;
+      if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
       setField("dSignaling", t("signal.closed"), "warn");
       if (isLive()) scheduleReconnect();
     };
@@ -555,6 +563,31 @@ function signal(obj) {
 // tagged with the sender's peer id by the server.
 function makeSignal(type, peerId, payload) {
   return ROLE === "streamer" ? { type, to: peerId, payload } : { type, payload };
+}
+
+// Gathering one connection can produce a dozen-plus ICE candidates, and every
+// WebSocket message is a Durable Object request, so candidates are coalesced and
+// flushed as one message per short window instead of one message per candidate.
+const CANDIDATE_FLUSH_MS = 100;
+
+function queueLocalCandidate(peerId, conn, candidate) {
+  if (candidate) conn.candBuffer.push(candidate.toJSON());
+  else conn.candEnd = true;
+  if (!conn.candTimer) {
+    conn.candTimer = setTimeout(() => flushLocalCandidates(peerId, conn), CANDIDATE_FLUSH_MS);
+  }
+  // Send the tail promptly instead of waiting out the window.
+  if (conn.candEnd) flushLocalCandidates(peerId, conn);
+}
+
+function flushLocalCandidates(peerId, conn) {
+  if (conn.candTimer) { clearTimeout(conn.candTimer); conn.candTimer = null; }
+  const candidates = conn.candBuffer;
+  const end = conn.candEnd;
+  if (!candidates.length && !end) return;
+  conn.candBuffer = [];
+  conn.candEnd = false;
+  signal(makeSignal("candidate", peerId, { candidates, end }));
 }
 
 async function handleSignal(msg) {
@@ -634,6 +667,10 @@ function createPc(peerId) {
     display: null,
     iceRestartTimer: null,
     iceRestarts: 0,
+    // Outgoing ICE candidates waiting for the next flush (see queueLocalCandidate).
+    candBuffer: [],
+    candTimer: null,
+    candEnd: false,
   };
   conns.set(peerId, conn);
   if (!focusedId) setFocused(peerId);
@@ -645,10 +682,10 @@ function createPc(peerId) {
   pc.onicecandidate = (e) => {
     if (e.candidate) {
       noteLocalCandidate(peerId, conn, e.candidate);
-      signal(makeSignal("candidate", peerId, e.candidate.toJSON()));
+      queueLocalCandidate(peerId, conn, e.candidate);
     } else {
       log(t("log.iceGatheringComplete", { peer: peerLabel(peerId) }));
-      signal(makeSignal("candidate", peerId, null));
+      queueLocalCandidate(peerId, conn, null);
     }
   };
   pc.onicecandidateerror = (e) => {
@@ -691,6 +728,10 @@ function closeConn(peerId) {
   if (conn.iceRestartTimer) {
     clearTimeout(conn.iceRestartTimer);
     conn.iceRestartTimer = null;
+  }
+  if (conn.candTimer) {
+    clearTimeout(conn.candTimer);
+    conn.candTimer = null;
   }
   const pc = conn.pc;
   if (pc) {
@@ -1056,14 +1097,22 @@ async function handleAnswer(peerId, answer) {
   log(t("log.answerReceived", { peer: peerLabel(peerId) }));
 }
 
-async function handleRemoteCandidate(peerId, cand) {
+// The payload is a single candidate, a legacy null end-of-candidates marker, or
+// a batch { candidates: [...], end } from the sender's coalescing flush.
+async function handleRemoteCandidate(peerId, payload) {
   const conn = conns.get(peerId);
   if (!conn) return;
-  if (!conn.pc.remoteDescription) {
-    conn.pending.push(cand);
-    return;
+  const candidates = payload && Array.isArray(payload.candidates) ? payload.candidates : [payload];
+  for (const cand of candidates) {
+    if (!conn.pc.remoteDescription) conn.pending.push(cand);
+    else await addCandidate(conn, cand);
   }
-  await addCandidate(conn, cand);
+  if (payload && payload.end) {
+    // Queue the end marker too when there is no description yet, so it lands in
+    // order after the candidates already queued.
+    if (!conn.pc.remoteDescription) conn.pending.push(null);
+    else await addCandidate(conn, null);
+  }
 }
 
 async function addCandidate(conn, cand) {
