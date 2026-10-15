@@ -23,10 +23,60 @@ function text(body, status) {
   });
 }
 
+// Link-preview image (1200x630). Served as a static asset.
+const OG_IMAGE = "/og.png";
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Open Graph metadata per route. Crawlers (WhatsApp, Discord, ...) don't run
+// JS, so the shell's meta tags are filled in here, server-side. Defaults to
+// Portuguese, matching the app's default locale.
+function ogFor(kind, room) {
+  if (kind === "home") {
+    return {
+      title: "Golive",
+      description: "Assista ou compartilhe a tela por um link privado. WebRTC direto entre navegadores, sem conta e sem servidor no meio.",
+    };
+  }
+  if (kind === "host") {
+    return {
+      title: "Golive \u2014 compartilhar a tela",
+      description: "Compartilhe sua tela, uma janela ou aba e envie o link da sala para os amigos.",
+    };
+  }
+  return {
+    title: `Golive \u2014 assistir \u00e0 sala ${room}`,
+    description: `Assista \u00e0 transmiss\u00e3o de tela da sala ${room}.`,
+  };
+}
+
+// Serve an HTML shell (the app or the landing page) without caching so a
+// deploy takes effect on the next load, filling in the link-preview meta tags.
+async function serveShell(env, url, assetPath, og) {
+  const res = await env.ASSETS.fetch(new Request(new URL(assetPath, url.origin)));
+  let html = await res.text();
+  html = html
+    .replaceAll("__OG_TITLE__", escapeHtml(og.title))
+    .replaceAll("__OG_DESC__", escapeHtml(og.description))
+    .replaceAll("__OG_URL__", escapeHtml(url.origin + url.pathname))
+    .replaceAll("__OG_IMAGE__", escapeHtml(url.origin + OG_IMAGE));
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(NO_STORE)) headers.set(k, v);
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  return new Response(html, { status: res.status, headers });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const lower = path.toLowerCase();
 
     // Signaling: relay to the Durable Object that owns this room.
     if (path === "/ws") {
@@ -36,16 +86,34 @@ export default {
       return stub.fetch(request);
     }
 
-    // The app shell is the same file for the streamer ("/") and viewers
-    // ("/watch/<id>"); the client decides its role from the path.
-    if (path === "/" || /^\/watch\/[a-z0-9][a-z0-9_-]{2,23}$/.test(path)) {
-      const res = await env.ASSETS.fetch(new Request(new URL("/index.html", url.origin)));
-      const headers = new Headers(res.headers);
-      for (const [k, v] of Object.entries(NO_STORE)) headers.set(k, v);
-      return new Response(res.body, { status: res.status, headers });
+    // Landing page: pick Host or Watch.
+    if (path === "/") return serveShell(env, url, "/home.html", ogFor("home"));
+
+    // Host console. The client decides its role from the path; "/host" has no
+    // room segment, so it is treated as a streamer.
+    if (lower === "/host") return serveShell(env, url, "/index.html", ogFor("host"));
+
+    // Canonical viewer URL. Room IDs are lowercase; redirect a mixed-case path
+    // to its canonical form.
+    if (lower.startsWith("/watch/")) {
+      const watch = lower.match(/^\/watch\/([a-z0-9][a-z0-9_-]{2,23})$/);
+      if (!watch) return text("Not found\n", 404);
+      if (path !== lower) {
+        const target = new URL(`/watch/${watch[1]}`, url.origin);
+        target.search = url.search;
+        return Response.redirect(target.toString(), 302);
+      }
+      return serveShell(env, url, "/index.html", ogFor("watch", watch[1]));
     }
 
-    if (path.startsWith("/watch/")) return text("Not found\n", 404);
+    // Short alias: a bare room ID (/test) redirects to the canonical
+    // /watch/<id>, so typing a room code in the address bar just works.
+    const alias = lower.match(/^\/([a-z0-9][a-z0-9_-]{2,23})$/);
+    if (alias) {
+      const target = new URL(`/watch/${alias[1]}`, url.origin);
+      target.search = url.search;
+      return Response.redirect(target.toString(), 302);
+    }
 
     // Everything else (app.js, style.css, favicon.png, ...) is a static asset.
     return env.ASSETS.fetch(request);

@@ -23,6 +23,13 @@
   box-sizing: border-box;
 }
 
+/* Respect the `hidden` attribute even when a class sets its own display
+   (e.g. .controls-group is display:flex). Without this, role-based hiding
+   such as the streamer controls on the viewer page has no effect. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -90,6 +97,46 @@ h1 {
   border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 7px var(--ok);
+}
+
+/* Header actions (language picker + role badge) */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lang-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: rgba(255, 255, 255, 0.05);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238b93a7' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 27px 5px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lang-select:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.lang-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.2);
+}
+
+.lang-select option {
+  background: var(--panel-input);
+  color: var(--text);
 }
 
 /* Controls Bar */
@@ -365,6 +412,7 @@ select {
 /* Link Row */
 .link-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   background: rgba(79, 140, 255, 0.05);
@@ -597,4 +645,199 @@ pre .bad {
 
 pre .ok {
   color: var(--ok);
+}
+
+/* Landing page (/) */
+.home {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.home-card {
+  display: block;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px;
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+a.home-card:hover {
+  border-color: var(--accent);
+  background: var(--panel-hover);
+  transform: translateY(-1px);
+}
+
+.home-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--panel-input);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+
+.home-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.home-card h2 {
+  font-size: 16px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0 0 6px;
+}
+
+.home-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.home-card .watch-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.home-card .watch-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  outline: none;
+}
+
+.home-card .watch-form input::placeholder {
+  color: var(--muted);
+}
+
+.home-card .watch-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.2);
+}
+
+.home-card .watch-form button {
+  flex-shrink: 0;
+}
+
+.home-note {
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* Log header: group the collapse toggle and Clear buttons. */
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* QR modal (desktop-to-phone handoff) */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  width: min(360px, 100%);
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.modal h2 {
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+.qr-box {
+  display: flex;
+  justify-content: center;
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px;
+  width: fit-content;
+  margin: 0 auto;
+}
+
+.qr-box svg {
+  display: block;
+  width: min(256px, 70vw);
+  height: auto;
+}
+
+.qr-hint {
+  margin: 12px 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.qr-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Landing page: "how it works" / "what it needs" */
+.home-info {
+  margin-top: 14px;
+}
+
+.info-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.info-card h2 {
+  font-size: 12px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+}
+
+.info-card ol,
+.info-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.info-card li + li {
+  margin-top: 6px;
 }

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Golive</title>
+  <meta name="description" content="__OG_DESC__">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Golive">
+  <meta property="og:title" content="__OG_TITLE__">
+  <meta property="og:description" content="__OG_DESC__">
+  <meta property="og:url" content="__OG_URL__">
+  <meta property="og:image" content="__OG_IMAGE__">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="__OG_TITLE__">
+  <meta name="twitter:description" content="__OG_DESC__">
+  <meta name="twitter:image" content="__OG_IMAGE__">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-content">
+      <div class="header-titles">
+        <h1>Golive</h1>
+        <p class="sub" data-i18n="home.tagline">Share your screen with friends over a private link. WebRTC carries the media peer-to-peer &mdash; nothing passes through the server.</p>
+      </div>
+      <div class="header-actions">
+        <select id="langSelect" class="lang-select" data-lang-select data-i18n-aria-label="app.language" aria-label="Language"></select>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="home">
+      <a class="home-card" href="/host">
+        <span class="home-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+        </span>
+        <h2 data-i18n="home.host">Host</h2>
+        <p data-i18n="home.hostDesc">Share your screen, window or tab and send the room link to friends.</p>
+      </a>
+
+      <div class="home-card">
+        <span class="home-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </span>
+        <h2 data-i18n="home.watch">Watch</h2>
+        <p data-i18n="home.watchDesc">Enter the room code you were given.</p>
+        <form class="watch-form" id="watchForm" autocomplete="off">
+          <input id="watchCode" type="text" inputmode="text" spellcheck="false" autocapitalize="off" maxlength="24" data-i18n-placeholder="home.roomCode" placeholder="room code" data-i18n-aria-label="home.roomCodeAria" aria-label="Room code">
+          <button class="primary" type="submit" data-i18n="home.watchBtn">Watch</button>
+        </form>
+        <p class="home-note" id="watchError" hidden data-i18n="home.invalidCode">A room code is 3&ndash;24 characters: a&ndash;z, 0&ndash;9, - or _.</p>
+      </div>
+    </section>
+
+    <section class="home home-info">
+      <div class="info-card">
+        <h2 data-i18n="home.howTitle">How it works</h2>
+        <ol>
+          <li data-i18n="home.how1">The host creates a room and shares the link (or the QR code) with the viewers.</li>
+          <li data-i18n="home.how2">Video and audio travel directly between the browsers (WebRTC peer-to-peer). The server only helps set up the connection &mdash; it never sees or records your screen.</li>
+          <li data-i18n="home.how3">The host sends one stream per viewer, so upload bandwidth sets how many can watch and at what quality.</li>
+        </ol>
+      </div>
+      <div class="info-card">
+        <h2 data-i18n="home.needTitle">What it needs</h2>
+        <ul>
+          <li data-i18n="home.need1">A current browser. To host, Chrome, Edge or Firefox on desktop (screen sharing is limited in Safari).</li>
+          <li data-i18n="home.need2">A secure address (HTTPS) to capture the screen &mdash; this page already uses HTTPS.</li>
+          <li data-i18n="home.need3">There is no relay server (TURN), so both sides must connect directly. Strict NAT or corporate firewalls can block it; IPv6 helps.</li>
+          <li data-i18n="home.need4">Screen audio depends on the browser and source: a tab or the whole screen in Chrome (Windows, ChromeOS, macOS 14.2+). Firefox and Safari don't share it.</li>
+          <li data-i18n="home.need5">Up to 8 viewers per room (default).</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="/i18n.js"></script>
+  <script>
+    (function () {
+      const RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
+      const form = document.getElementById("watchForm");
+      const input = document.getElementById("watchCode");
+      const err = document.getElementById("watchError");
+
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const code = (input.value || "").trim().toLowerCase();
+        if (!RE.test(code)) {
+          err.hidden = false;
+          input.focus();
+          return;
+        }
+        location.href = "/watch/" + code;
+      });
+
+      input.addEventListener("input", () => { err.hidden = true; });
+
+      const room = new URLSearchParams(location.search).get("room");
+      if (room) input.value = room.toLowerCase();
+    })();
+  </script>
+</body>
+</html>

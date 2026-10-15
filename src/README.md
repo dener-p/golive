@@ -39,15 +39,35 @@ domain, delete the `routes` entry and deploy to `golive.<account>.workers.dev`.
 
 ## Use
 
-1. The streamer opens `/`, optionally types a **Room ID** (3-24 chars: `a-z`,
-   `0-9`, `-`, `_`, starting with a letter or number; leave it blank for a
-   random one) and clicks **Start sharing**, then picks a screen/window/tab.
-   The chosen ID is saved in `localStorage`, so the same link works next time.
-2. Share the `/watch/<id>` link. Up to `MAX_VIEWERS` devices (default 8) can
-   join. If the streamer is not live yet, viewers see "Waiting for the
-   streamer…" and connect the moment it starts.
+1. Open `/` and pick **Host** or **Watch**. The host console is `/host`; the
+   streamer optionally types a **Room ID** (3-24 chars: `a-z`, `0-9`, `-`, `_`,
+   starting with a letter or number; leave it blank for a random one) and clicks
+   **Start sharing**, then picks a screen/window/tab. The chosen ID is saved in
+   `localStorage`, so the same link works next time.
+2. Share the `/watch/<id>` link. On mobile the **Share** button opens the native
+   share sheet; on desktop **QR code** shows a scannable code so a phone can join
+   without retyping. Up to `MAX_VIEWERS` devices (default 8) can join. If the
+   streamer is not live yet, viewers see "Waiting for the streamer…" and connect
+   the moment it starts. A bare room code in the address bar (`/test`) redirects
+   to the canonical `/watch/test`.
 3. A viewer unmutes with the speaker icon in the video controls (audio starts
-   muted for autoplay-policy reasons).
+   muted for autoplay-policy reasons). Viewers see only the player and
+   diagnostics, not the host controls. The viewer's volume and mute choice is
+   remembered on the next visit. For viewers the **Log** starts collapsed behind
+   a toggle, and status messages and log lines are announced to screen readers
+   (`aria-live`).
+
+Shared links get a **link preview** (Open Graph/Twitter): the worker fills the
+meta tags per route, so `/watch/<id>` previews as “Golive — assistir à sala
+&lt;id&gt;” with `public/og.png` as the image.
+
+## Language
+
+The UI is available in **Portuguese (pt-BR)** and **English**. The default is
+pt-BR; the browser language picks English for `en` locales, and the header
+picker overrides and remembers the choice (`localStorage`). Add `?lang=en` (or
+`?lang=pt-BR`) to force one for a link. Strings live in `public/i18n.js`; markup
+opts in with `data-i18n*` attributes and code calls the global `t(key, vars)`.
 
 Before starting, the streamer chooses:
 
@@ -56,12 +76,16 @@ Before starting, the streamer chooses:
 - **Share audio** - include captured tab/system audio (best effort, see below).
 - **Quality** - a sender preset: 4K/60fps (40 Mbps), 4K/30fps (25 Mbps),
   1440p/60fps (20 Mbps), 1080p/60fps (12 Mbps), 1080p/30fps (8 Mbps),
-  720p/30fps (4 Mbps), Data saver (1 Mbps) or Auto. Each sets a bitrate ceiling,
+  Text/sharp (15 fps, 8 Mbps), 720p/30fps (4 Mbps), Data saver (1 Mbps) or Auto.
+  Each sets a bitrate ceiling,
   fps cap and resolution via `RTCRtpSender.setParameters()` and can be changed
   live mid-share. The encoded resolution follows the preset (a 4K capture is
   scaled to 1080p for the 1080p presets), and the high-resolution presets prefer
   sharpness (`maintain-resolution`) since screen content is mostly static. The
-  achieved bitrate can be lower than the ceiling.
+  achieved bitrate can be lower than the ceiling. **Text/sharp** spends its bits
+  on detail instead of frames, so documents and code stay crisp when the content
+  barely moves. The chosen preset, **Prefer AV1** and **Share audio** are
+  remembered in `localStorage` for the next visit.
 
 ## Design notes
 
@@ -83,14 +107,19 @@ Before starting, the streamer chooses:
   `getCapabilities("video")` reports it; every other codec (including RTX)
   stays as a fallback. The UI shows the codec that was *actually* negotiated.
 - **ICE** uses STUN (`stun:stun.l.google.com:19302`) only. **No TURN.** If no
-  direct path exists, ICE goes to `failed` and the UI says so.
+  direct path exists, ICE goes to `failed` and the UI says so. When a drop is
+  seen, the streamer (the offerer) retries the path with an **ICE restart**
+  (`restartIce()` + a fresh offer, up to 3 times per connection), so a network
+  change can recover without tearing the session down.
 - **Audio** comes from the display stream (`getDisplayMedia({ audio: true })`)
   on its own transceiver using Opus. The offer's Opus `fmtp` is edited
   (`preferOpus()`) to raise `maxaveragebitrate` to 128 kbps and request stereo,
   since the browser default is only ~32 kbps. Best effort and source-dependent:
   - **Chrome tab** - carries the tab's audio on all platforms.
   - **Entire screen** - carries system audio (Windows/ChromeOS; macOS 14.2+).
-  - **Window** - normally has none; prefer a tab or the whole screen.
+  - **Window** - carries only the picked window's audio where the browser
+    supports per-window capture (`windowAudio: "window"`), so other windows stay
+    silent; falls back to video-only when unsupported.
   - Firefox and Safari do not offer screen-share audio.
   When no audio track comes back, the app logs why and continues video-only.
 - **Reconnect**: the client reopens the signaling socket with backoff while it
@@ -103,5 +132,9 @@ Before starting, the streamer chooses:
 
 - `worker.js` - Worker routing + the `Room` Durable Object (signaling)
 - `wrangler.jsonc` - Cloudflare Worker, assets, DO and domain configuration
-- `public/index.html`, `public/app.js`, `public/style.css` - frontend
+- `public/index.html`, `public/app.js`, `public/style.css` - host/viewer app shell
+- `public/home.html` - landing page at `/` (Host or Watch)
+- `public/i18n.js` - pt-BR / en translations (no build step)
+- `public/qr.js` - dependency-free QR encoder (room link as a scannable code)
+- `public/og.png` - 1200x630 link-preview image (worker injects the meta tags)
 - `public/favicon.png` - icon

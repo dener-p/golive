@@ -9,14 +9,19 @@ ever passes through Cloudflare.
 
 ## What it does
 
-- The **streamer** opens `/`, optionally picks a **Room ID**, and shares a
-  screen, window or tab. The ID is remembered, so the same link works next time.
-- **Viewers** open `/watch/<id>`. If the streamer is not live yet they wait and
-  connect automatically when it starts. Up to `MAX_VIEWERS` (default 8) devices
-  can watch at once.
+- The landing page at `/` offers **Host** (`/host`) or **Watch**. The host picks
+  a **Room ID** and shares a screen, window or tab. The ID is remembered, so the
+  same link works next time.
+- **Viewers** open `/watch/<id>` (a bare `/test` redirects there). If the
+  streamer is not live yet they wait and connect automatically when it starts.
+  Up to `MAX_VIEWERS` (default 8) devices can watch at once, and the viewer UI
+  hides the host controls.
 - Optional tab/system **audio**, best effort, lifted to 128 kbps stereo Opus.
-- **Quality** presets: 4K/60, 4K/30, 1440p/60, 1080p/60, 1080p/30, 720p/30,
-  Data saver, or Auto — changeable live mid-share.
+- **Portuguese (pt-BR)** by default, with **English**; the browser language is
+  detected and a header picker remembers your choice.
+- **Quality** presets: 4K/60, 4K/30, 1440p/60, 1080p/60, 1080p/30,
+  Text/sharp (15 fps), 720p/30, Data saver, or Auto — changeable live mid-share,
+  and remembered for your next visit.
 
 ## Quick start (local)
 

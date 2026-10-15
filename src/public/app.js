@@ -1,5 +1,5 @@
 // Golive: browser screen sharing over WebRTC, signaled by Cloudflare Workers.
-// Streamer: /          Viewer: /watch/<roomId>
+// Host: /host   Viewer: /watch/<roomId>   Landing: /
 // The streamer keeps one RTCPeerConnection per viewer (a mesh); the
 // diagnostics panel describes whichever viewer is selected.
 "use strict";
@@ -21,7 +21,10 @@ const VIEWER_KEY = "streamer";
 // Room IDs are shared in the URL, so keep them lowercase and URL-safe.
 const ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
 const ROOM_STORAGE_KEY = "golive.roomId";
+const AUDIO_PREFS_KEY = "golive.audio";
+const PREFS_KEY = "golive.prefs";
 
+// A /watch/<id> path means viewer; /host (and anything else) means host.
 const match = location.pathname.match(/^\/watch\/([a-z0-9][a-z0-9_-]{2,23})$/);
 const roomFromUrl = match ? match[1] : null;
 const ROLE = roomFromUrl ? "viewer" : "streamer";
@@ -73,6 +76,49 @@ function clearAlert() {
   $("alert").hidden = true;
 }
 
+// Viewer volume/mute is remembered across reloads. Audio still starts muted so
+// autoplay is permitted; a saved "unmuted" choice is restored once playback has
+// started (see pc.ontrack). `audioState` tracks the last applied/known state so
+// programmatic changes aren't mistaken for user ones and persisted.
+let audioState = { volume: 1, muted: true };
+
+function loadAudioPrefs() {
+  try {
+    const raw = localStorage.getItem(AUDIO_PREFS_KEY);
+    if (raw) {
+      const o = JSON.parse(raw);
+      const volume = typeof o.volume === "number" && o.volume >= 0 && o.volume <= 1 ? o.volume : 1;
+      return { volume, muted: o.muted !== false };
+    }
+  } catch { /* storage unavailable */ }
+  return { volume: 1, muted: true };
+}
+
+function saveAudioPrefs() {
+  try { localStorage.setItem(AUDIO_PREFS_KEY, JSON.stringify(audioState)); } catch { /* storage unavailable */ }
+}
+
+// Streamer preferences (quality preset, Prefer AV1, Share audio) are remembered
+// so a returning host does not have to re-pick them on every visit.
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (raw) return JSON.parse(raw) || {};
+  } catch { /* storage unavailable */ }
+  return {};
+}
+
+function savePrefs(patch) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch })); } catch { /* storage unavailable */ }
+}
+
+// Apply volume/mute without treating it as a new user preference.
+function applyAudioState(video, prefs) {
+  audioState = { volume: prefs.volume, muted: prefs.muted };
+  video.volume = prefs.volume;
+  video.muted = prefs.muted;
+}
+
 function resetStatValues() {
   STAT_FIELDS.forEach((id) => setField(id, "\u2013"));
 }
@@ -90,9 +136,9 @@ function setVideoActive(active, isWaiting = false) {
     vid.hidden = true;
     if (pht) {
       if (ROLE === "viewer") {
-        pht.textContent = isWaiting ? "Waiting for the streamer\u2026" : "Disconnected";
+        pht.textContent = isWaiting ? t("placeholder.waiting") : t("placeholder.disconnected");
       } else {
-        pht.textContent = "Click \u201cStart sharing\u201d to begin screen capture";
+        pht.textContent = t("placeholder.start");
       }
     }
   }
@@ -120,7 +166,7 @@ function resetStatsFields() {
 }
 
 function peerLabel(peerId) {
-  return ROLE === "viewer" ? "streamer" : `viewer ${peerId}`;
+  return ROLE === "viewer" ? t("peer.streamer") : t("peer.viewer", { id: peerId });
 }
 
 function iceClass(s) {
@@ -137,39 +183,39 @@ function reportSupport() {
   try {
     const send = hasAv1(RTCRtpSender.getCapabilities("video"));
     const recv = hasAv1(RTCRtpReceiver.getCapabilities("video"));
-    const text = `send: ${send ? "yes" : "no"}, receive: ${recv ? "yes" : "no"}`;
+    const text = `${t("support.send")}: ${t(send ? "support.yes" : "support.no")}, ${t("support.receive")}: ${t(recv ? "support.yes" : "support.no")}`;
     const relevant = ROLE === "streamer" ? send : recv;
     setField("dSupport", text, relevant ? "ok" : "warn");
     if (!relevant) {
-      log(`AV1 is not available for ${ROLE === "streamer" ? "sending" : "receiving"} in this browser; a fallback codec will be used.`, "warn");
+      log(t(ROLE === "streamer" ? "log.av1UnavailableSend" : "log.av1UnavailableRecv"), "warn");
     }
   } catch (e) {
-    setField("dSupport", "unknown (getCapabilities unavailable)", "warn");
+    setField("dSupport", t("support.unknown"), "warn");
   }
 }
 
 // Put AV1 first, keep every other codec (including RTX/RED/FEC) as fallbacks.
 function applyCodecPreferences(transceiver, kind) {
   if (!$("preferAv1").checked) {
-    log("AV1 preference disabled: using the browser's default codec order.");
+    log(t("log.av1Disabled"));
     return;
   }
   if (!transceiver || typeof transceiver.setCodecPreferences !== "function") {
-    log("setCodecPreferences() is not supported by this browser.", "warn");
+    log(t("log.codecPrefsUnsupported"), "warn");
     return;
   }
   const caps = (kind === "sender" ? RTCRtpSender : RTCRtpReceiver).getCapabilities("video");
   if (!hasAv1(caps)) {
-    log("AV1 not reported as supported; leaving default codec order.", "warn");
+    log(t("log.av1NotSupported"), "warn");
     return;
   }
   const isAv1 = (c) => c.mimeType.toLowerCase() === "video/av1";
   const prefs = [...caps.codecs.filter(isAv1), ...caps.codecs.filter((c) => !isAv1(c))];
   try {
     transceiver.setCodecPreferences(prefs);
-    log(`Codec preference set: AV1 first, ${prefs.length - caps.codecs.filter(isAv1).length} fallback entries kept.`);
+    log(t("log.codecPrefsSet", { count: prefs.length - caps.codecs.filter(isAv1).length }));
   } catch (e) {
-    log(`setCodecPreferences failed: ${e.message}`, "warn");
+    log(t("log.codecPrefsFailed", { message: e.message }), "warn");
   }
 }
 
@@ -185,8 +231,8 @@ function applyCodecPreferences(transceiver, kind) {
 // so the presets prefer keeping resolution sharp over keeping every frame.
 const QUALITY_PRESETS = {
   "4k60": {
-    label: "4K \u00b7 60 fps \u00b7 up to 40 Mbps",
-    short: "4K / 60 fps",
+    labelKey: "preset.4k60",
+    shortKey: "preset.4k60.short",
     maxBitrate: 40_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -195,8 +241,8 @@ const QUALITY_PRESETS = {
     degradationPreference: "maintain-resolution",
   },
   "4k30": {
-    label: "4K \u00b7 30 fps \u00b7 up to 25 Mbps",
-    short: "4K / 30 fps",
+    labelKey: "preset.4k30",
+    shortKey: "preset.4k30.short",
     maxBitrate: 25_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -205,8 +251,8 @@ const QUALITY_PRESETS = {
     degradationPreference: "maintain-resolution",
   },
   "1440p60": {
-    label: "1440p \u00b7 60 fps \u00b7 up to 20 Mbps",
-    short: "1440p / 60 fps",
+    labelKey: "preset.1440p60",
+    shortKey: "preset.1440p60.short",
     maxBitrate: 20_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -215,8 +261,8 @@ const QUALITY_PRESETS = {
     degradationPreference: "maintain-resolution",
   },
   "1080p60": {
-    label: "1080p \u00b7 60 fps \u00b7 up to 12 Mbps",
-    short: "1080p / 60 fps",
+    labelKey: "preset.1080p60",
+    shortKey: "preset.1080p60.short",
     maxBitrate: 12_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -225,8 +271,8 @@ const QUALITY_PRESETS = {
     degradationPreference: "maintain-resolution",
   },
   "1080p30": {
-    label: "1080p \u00b7 30 fps \u00b7 up to 8 Mbps",
-    short: "1080p / 30 fps",
+    labelKey: "preset.1080p30",
+    shortKey: "preset.1080p30.short",
     maxBitrate: 8_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -234,9 +280,22 @@ const QUALITY_PRESETS = {
     scaleResolutionDownBy: 1,
     degradationPreference: "maintain-resolution",
   },
+  // Screen content is often static text. A low frame rate with a high bitrate
+  // ceiling keeps far more detail per frame, so text stays sharp instead of
+  // being blurred away when the encoder adapts.
+  text: {
+    labelKey: "preset.text",
+    shortKey: "preset.text.short",
+    maxBitrate: 8_000_000,
+    maxFramerate: 15,
+    captureFps: 15,
+    targetHeight: 1440,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
   "720p30": {
-    label: "720p \u00b7 30 fps \u00b7 up to 4 Mbps",
-    short: "720p / 30 fps",
+    labelKey: "preset.720p30",
+    shortKey: "preset.720p30.short",
     maxBitrate: 4_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -245,8 +304,8 @@ const QUALITY_PRESETS = {
     degradationPreference: "balanced",
   },
   low: {
-    label: "Data saver \u00b7 24 fps \u00b7 up to 1 Mbps",
-    short: "Data saver (1 Mbps)",
+    labelKey: "preset.low",
+    shortKey: "preset.low.short",
     maxBitrate: 1_000_000,
     maxFramerate: 24,
     captureFps: 24,
@@ -255,8 +314,8 @@ const QUALITY_PRESETS = {
     degradationPreference: "maintain-framerate",
   },
   auto: {
-    label: "Auto (browser default)",
-    short: "Auto (default)",
+    labelKey: "preset.auto",
+    shortKey: "preset.auto.short",
     maxBitrate: null,
     maxFramerate: null,
     captureFps: 60,
@@ -272,7 +331,8 @@ function currentPresetKey() {
 }
 
 function presetLabel(key = currentPresetKey()) {
-  return QUALITY_PRESETS[key] ? QUALITY_PRESETS[key].label : QUALITY_PRESETS["1080p60"].label;
+  const p = QUALITY_PRESETS[key] || QUALITY_PRESETS["1080p60"];
+  return t(p.labelKey);
 }
 
 // Encoded resolution follows the preset's target height instead of a fixed
@@ -281,7 +341,12 @@ function presetLabel(key = currentPresetKey()) {
 function scaleForPreset(preset, sender) {
   const track = sender.track;
   const height = track && typeof track.getSettings === "function" ? track.getSettings().height : 0;
-  if (preset.targetHeight && height) return Math.round(Math.max(1, height / preset.targetHeight) * 100) / 100;
+  if (preset.targetHeight && height) {
+    // Never upscale: scaleResolutionDownBy must be >= 1, so a capture smaller
+    // than the preset's target is left at its native size.
+    const scale = Math.max(1, height / preset.targetHeight);
+    return Math.round(scale * 100) / 100;
+  }
   return preset.scaleResolutionDownBy || 1;
 }
 
@@ -314,7 +379,7 @@ async function applyQualityToSender(sender, key) {
     }
     await sender.setParameters(params);
   } catch (e) {
-    log(`Could not apply quality preset \u201c${preset.label}\u201d: ${e.message}`, "warn");
+    log(t("log.qualityApplyFailed", { label: t(preset.labelKey), message: e.message }), "warn");
   }
 }
 
@@ -342,30 +407,30 @@ function connectSignaling(room, role) {
   signalingRoom = room;
   signalingRole = role;
   return new Promise((resolve, reject) => {
-    setField("dSignaling", "connecting\u2026");
+    setField("dSignaling", t("signal.connecting"));
     const sock = new WebSocket(wsUrl(room, role));
     ws = sock;
     let settled = false;
     sock.onopen = () => {
       reconnectDelay = 1000;
-      setField("dSignaling", "connected", "ok");
+      setField("dSignaling", t("signal.connected"), "ok");
       if (!settled) { settled = true; resolve(); }
     };
     sock.onerror = () => {
       if (ws !== sock) return;
-      setField("dSignaling", "error", "bad");
-      if (!settled) { settled = true; reject(new Error("Could not reach the signaling server")); }
+      setField("dSignaling", t("signal.error"), "bad");
+      if (!settled) { settled = true; reject(new Error(t("log.signalUnreachable"))); }
     };
     sock.onclose = () => {
       if (ws !== sock) return;
       ws = null;
-      setField("dSignaling", "closed", "warn");
+      setField("dSignaling", t("signal.closed"), "warn");
       if (isLive()) scheduleReconnect();
     };
     sock.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
-      handleSignal(msg).catch((e) => log(`Signal handling error: ${e.message}`, "bad"));
+      handleSignal(msg).catch((e) => log(t("log.signalHandleError", { message: e.message }), "bad"));
     };
   });
 }
@@ -383,10 +448,10 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     if (!signalingRoom || !isLive()) return;
-    log(`Reconnecting to room \u201c${signalingRoom}\u201d\u2026`, "warn");
+    log(t("log.reconnecting", { room: signalingRoom }), "warn");
     try {
       await connectSignaling(signalingRoom, signalingRole);
-      log("Signaling reconnected.");
+      log(t("log.reconnected"));
     } catch {
       scheduleReconnect();
     }
@@ -416,27 +481,27 @@ async function handleSignal(msg) {
     case "created":
       closeAllConns(); // drop any stale peers from a previous connection
       showRoomLink();
-      log(`Room \u201c${roomId}\u201d is live. Share the link to invite viewers.`);
+      log(t("log.roomLive", { room: roomId }));
       break;
     case "joined":
       closeAllConns(); // fresh peer id after a reconnect
-      log(`Joined room ${msg.room}.`);
+      log(t("log.joined", { room: msg.room }));
       showWaiting();
       break;
     case "streamer-waiting":
       showWaiting();
       break;
     case "peer-joined":
-      log(`Viewer ${msg.peerId} joined; creating offer.`);
+      log(t("log.viewerJoined", { id: msg.peerId }));
       clearAlert();
       await startOffer(msg.peerId);
       break;
     case "peer-left":
-      log(`Viewer ${msg.peerId} left.`, "warn");
+      log(t("log.viewerLeft", { id: msg.peerId }), "warn");
       closeConn(msg.peerId);
       break;
     case "streamer-left":
-      log("Streamer stopped sharing. Waiting for it to come back\u2026", "warn");
+      log(t("log.streamerLeft"), "warn");
       closeAllConns();
       showWaiting();
       break;
@@ -449,14 +514,18 @@ async function handleSignal(msg) {
     case "candidate":
       await handleRemoteCandidate(ROLE === "viewer" ? VIEWER_KEY : msg.from, msg.payload);
       break;
-    case "error":
-      log(`Server: ${msg.message}`, "bad");
-      showAlert(msg.message, "bad");
+    case "error": {
+      const message = msg.code === "room-in-use" ? t("alert.roomInUse")
+        : msg.code === "room-full" ? t("alert.roomFull")
+        : msg.message;
+      log(t("log.serverError", { message }), "bad");
+      showAlert(message, "bad");
       if (msg.code === "room-in-use" || msg.code === "room-full") {
         if (ROLE === "streamer" && localStream) stopSharing();
         else { stopReconnecting(); if (ws) ws.close(); }
       }
       break;
+    }
   }
 }
 
@@ -473,6 +542,8 @@ function createPc(peerId) {
     warnedCodec: false,
     candCounts: { local: {}, total: 0 },
     display: null,
+    iceRestartTimer: null,
+    iceRestarts: 0,
   };
   conns.set(peerId, conn);
   if (!focusedId) setFocused(peerId);
@@ -486,18 +557,18 @@ function createPc(peerId) {
       noteLocalCandidate(peerId, conn, e.candidate);
       signal(makeSignal("candidate", peerId, e.candidate.toJSON()));
     } else {
-      log(`[${peerLabel(peerId)}] ICE gathering complete.`);
+      log(t("log.iceGatheringComplete", { peer: peerLabel(peerId) }));
       signal(makeSignal("candidate", peerId, null));
     }
   };
   pc.onicecandidateerror = (e) => {
     // Common for unreachable STUN over one address family; informational.
-    log(`[${peerLabel(peerId)}] ICE candidate error ${e.errorCode || ""} ${e.errorText || ""}`.trim(), "warn");
+    log(t("log.iceCandidateError", { peer: peerLabel(peerId), code: e.errorCode || "", text: e.errorText || "" }).trim(), "warn");
   };
-  pc.onicegatheringstatechange = () => log(`[${peerLabel(peerId)}] ICE gathering: ${pc.iceGatheringState}`);
+  pc.onicegatheringstatechange = () => log(t("log.iceGathering", { peer: peerLabel(peerId), state: pc.iceGatheringState }));
   pc.oniceconnectionstatechange = () => onIceState(peerId);
   pc.onconnectionstatechange = () => {
-    log(`[${peerLabel(peerId)}] Peer connection state: ${pc.connectionState}`);
+    log(t("log.pcState", { peer: peerLabel(peerId), state: pc.connectionState }));
     if (peerId === focusedId) setField("dPc", pc.connectionState);
   };
   pc.ontrack = (e) => {
@@ -505,14 +576,19 @@ function createPc(peerId) {
     const video = $("video");
     video.srcObject = stream;
     // Start muted so autoplay is allowed; the viewer unmutes with the
-    // video controls' speaker icon or the unmute banner.
-    video.muted = true;
-    video.play().catch(() => { });
+    // video controls' speaker icon or the unmute banner. Once playback has
+    // actually started, restore the saved volume/mute.
+    const prefs = loadAudioPrefs();
+    applyAudioState(video, { volume: prefs.volume, muted: true });
+    const playing = video.play();
+    if (playing && typeof playing.then === "function") {
+      playing
+        .then(() => { if (!prefs.muted) video.muted = false; checkAudioHint(); })
+        .catch(() => { });
+    }
     setVideoActive(true);
     checkAudioHint();
-    log(e.track.kind === "audio"
-      ? "Remote audio track received. Use the unmute button or player controls to listen."
-      : "Remote video track received.");
+    log(t(e.track.kind === "audio" ? "log.remoteAudio" : "log.remoteVideo"));
   };
 
   startStats();
@@ -522,6 +598,10 @@ function createPc(peerId) {
 function closeConn(peerId) {
   const conn = conns.get(peerId);
   if (!conn) return;
+  if (conn.iceRestartTimer) {
+    clearTimeout(conn.iceRestartTimer);
+    conn.iceRestartTimer = null;
+  }
   const pc = conn.pc;
   if (pc) {
     pc.onicecandidate = pc.onicecandidateerror = pc.onicegatheringstatechange =
@@ -561,7 +641,7 @@ function updatePeerSelect() {
   if (conns.size === 0) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "(no viewers)";
+    opt.textContent = t("peer.none");
     sel.appendChild(opt);
     sel.disabled = true;
     return;
@@ -570,7 +650,7 @@ function updatePeerSelect() {
   for (const peerId of conns.keys()) {
     const opt = document.createElement("option");
     opt.value = peerId;
-    opt.textContent = `viewer ${peerId}`;
+    opt.textContent = t("peer.viewer", { id: peerId });
     if (peerId === focusedId) opt.selected = true;
     sel.appendChild(opt);
   }
@@ -591,19 +671,73 @@ function onIceState(peerId) {
   const conn = conns.get(peerId);
   if (!conn) return;
   const s = conn.pc.iceConnectionState;
-  log(`[${peerLabel(peerId)}] ICE connection state: ${s}`, iceClass(s));
+  log(t("log.iceState", { peer: peerLabel(peerId), state: s }), iceClass(s));
+
+  // The streamer is the offerer, so it can retry the path with an ICE restart
+  // when the connection drops. "disconnected" is often transient, so give it a
+  // moment; "failed" is terminal, so act sooner. A recovery cancels any retry.
+  if (ROLE === "streamer") {
+    if (s === "disconnected" || s === "failed") {
+      scheduleIceRestart(peerId, s === "failed" ? 1500 : 4000);
+    } else if (s === "connected" || s === "completed") {
+      cancelIceRestart(conn);
+      conn.iceRestarts = 0;
+    }
+  }
+
   if (peerId !== focusedId) return;
   setField("dIce", s, iceClass(s));
   if (s === "failed") {
-    showAlert(
-      "ICE failed: no direct path between the peers. No TURN relay is configured, so media was not relayed. " +
-      "Check firewalls/NAT, try different networks, or verify that both sides have working IPv6.",
-      "bad"
-    );
+    showAlert(t("alert.iceFailed"), "bad");
   } else if (s === "disconnected") {
-    showAlert("ICE disconnected. It may recover; if not, the connection will move to failed.", "warn");
+    showAlert(t("alert.iceDisconnected"), "warn");
   } else if (s === "connected" || s === "completed") {
     clearAlert();
+  }
+}
+
+// Cap the number of ICE restarts per connection so a permanently unreachable
+// peer does not keep renegotiating forever.
+const MAX_ICE_RESTARTS = 3;
+
+function cancelIceRestart(conn) {
+  if (conn && conn.iceRestartTimer) {
+    clearTimeout(conn.iceRestartTimer);
+    conn.iceRestartTimer = null;
+  }
+}
+
+function scheduleIceRestart(peerId, delay) {
+  const conn = conns.get(peerId);
+  if (!conn || conn.iceRestartTimer) return; // one attempt queued at a time
+  conn.iceRestartTimer = setTimeout(() => {
+    conn.iceRestartTimer = null;
+    const pc = conn.pc;
+    if (!pc || pc.signalingState === "closed") return;
+    const state = pc.iceConnectionState;
+    if (state !== "disconnected" && state !== "failed") return; // recovered
+    doIceRestart(peerId);
+  }, delay);
+}
+
+async function doIceRestart(peerId) {
+  const conn = conns.get(peerId);
+  if (!conn || !conn.pc || typeof conn.pc.restartIce !== "function") return;
+  if (conn.iceRestarts >= MAX_ICE_RESTARTS) {
+    log(t("log.iceRestartGaveUp", { peer: peerLabel(peerId) }), "bad");
+    return;
+  }
+  conn.iceRestarts++;
+  try {
+    conn.pc.restartIce();
+    const offer = await conn.pc.createOffer({ iceRestart: true });
+    await conn.pc.setLocalDescription(offer);
+    signal(makeSignal("offer", peerId, conn.pc.localDescription.toJSON()));
+    log(t("log.iceRestart", { peer: peerLabel(peerId), attempt: conn.iceRestarts }), "warn");
+    // If it is still down a few seconds later, try again (up to the cap).
+    scheduleIceRestart(peerId, 6000);
+  } catch (e) {
+    log(t("log.iceRestartFailed", { peer: peerLabel(peerId), message: e.message }), "warn");
   }
 }
 
@@ -622,7 +756,7 @@ function noteLocalCandidate(peerId, conn, c) {
   if (peerId === focusedId) {
     setField("dCands", Object.entries(conn.candCounts.local).map(([k, v]) => `${k} \u00d7${v}`).join(", "));
   }
-  log(`[${peerLabel(peerId)}] Local candidate: ${family} ${type} (${parts[2] || "?"})`);
+  log(t("log.localCandidate", { peer: peerLabel(peerId), family, type, proto: parts[2] || "?" }));
 }
 
 // Raise the negotiated Opus bitrate/stereo by editing the offer's fmtp line.
@@ -667,12 +801,17 @@ async function startOffer(peerId) {
   if (audioTrack) offer.sdp = preferOpus(offer.sdp);
   await conn.pc.setLocalDescription(offer);
   signal(makeSignal("offer", peerId, conn.pc.localDescription.toJSON()));
-  log(`Offer sent to ${peerLabel(peerId)}${audioTrack ? " (video + audio)" : " (video only)"}.`);
+  log(t("log.offerSent", { peer: peerLabel(peerId), media: t(audioTrack ? "media.videoAudio" : "media.videoOnly") }));
 }
 
-// Viewer: answer the streamer's offer.
+// Viewer: answer the streamer's offer. A new offer on a live connection is a
+// renegotiation (ICE restart), so reuse the peer connection instead of tearing
+// it down — playback recovers without rebuilding from scratch.
 async function handleOffer(offer) {
-  const conn = createPc(VIEWER_KEY);
+  const existing = conns.get(VIEWER_KEY);
+  const conn = existing && existing.pc && existing.pc.signalingState !== "closed"
+    ? existing
+    : createPc(VIEWER_KEY);
   await conn.pc.setRemoteDescription(offer);
   await flushCandidates(conn);
   const tr = conn.pc.getTransceivers().find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === "video");
@@ -680,7 +819,7 @@ async function handleOffer(offer) {
   const answer = await conn.pc.createAnswer();
   await conn.pc.setLocalDescription(answer);
   signal(makeSignal("answer", VIEWER_KEY, conn.pc.localDescription.toJSON()));
-  log("Answer sent.");
+  log(t("log.answerSent"));
 }
 
 async function handleAnswer(peerId, answer) {
@@ -688,7 +827,7 @@ async function handleAnswer(peerId, answer) {
   if (!conn) return;
   await conn.pc.setRemoteDescription(answer);
   await flushCandidates(conn);
-  log(`[${peerLabel(peerId)}] Answer received.`);
+  log(t("log.answerReceived", { peer: peerLabel(peerId) }));
 }
 
 async function handleRemoteCandidate(peerId, cand) {
@@ -705,7 +844,7 @@ async function addCandidate(conn, cand) {
   try {
     await conn.pc.addIceCandidate(cand || undefined);
   } catch (e) {
-    log(`addIceCandidate failed: ${e.message}`, "warn");
+    log(t("log.addCandidateFailed", { message: e.message }), "warn");
   }
 }
 
@@ -768,18 +907,18 @@ function collectStats(peerId, conn, stats) {
     const lf = describeFamily(local), rf = describeFamily(remote);
     const lt = local ? local.candidateType : "?", rt = remote ? remote.candidateType : "?";
     const proto = local && local.protocol ? local.protocol.toUpperCase() : "";
-    d.pair = `local: ${lf} ${lt} \u00b7 remote: ${rf} ${rt}${proto ? " \u00b7 " + proto : ""}`;
+    d.pair = `${t("pair.local")}: ${lf} ${lt} \u00b7 ${t("pair.remote")}: ${rf} ${rt}${proto ? " \u00b7 " + proto : ""}`;
 
     const relayed = lt === "relay" || rt === "relay";
     if (relayed) {
-      d.path = "RELAYED (TURN)";
+      d.path = t("path.relayed");
       d.pathCls = "bad";
     } else {
       let fam = "";
-      if (lf === "IPv6" && rf === "IPv6") fam = " over IPv6";
-      else if (lf === "IPv4" && rf === "IPv4") fam = " over IPv4";
-      else if (lf === "unknown" || rf === "unknown" || lf === "mDNS" || rf === "mDNS") fam = " (address family hidden by browser)";
-      d.path = `direct${fam}`;
+      if (lf === "IPv6" && rf === "IPv6") fam = t("path.overIpv6");
+      else if (lf === "IPv4" && rf === "IPv4") fam = t("path.overIpv4");
+      else if (lf === "unknown" || rf === "unknown" || lf === "mDNS" || rf === "mDNS") fam = t("path.familyHidden");
+      d.path = t("path.direct") + fam;
       d.pathCls = lf === "IPv6" && rf === "IPv6" ? "ok" : "";
     }
     if (typeof pair.currentRoundTripTime === "number") {
@@ -828,14 +967,14 @@ function collectStats(peerId, conn, stats) {
     d.codecCls = isAv1 ? "ok" : "warn";
     if (!isAv1 && $("preferAv1").checked && !conn.warnedCodec) {
       conn.warnedCodec = true;
-      log(`[${peerLabel(peerId)}] Negotiated codec is ${mime}, not AV1.`, "warn");
+      log(t("log.codecNotAv1", { peer: peerLabel(peerId), mime }), "warn");
       if (peerId === focusedId) {
-        showAlert(`AV1 was preferred but the negotiated codec is ${mime}. Check AV1 support on both peers.`, "warn");
+        showAlert(t("alert.av1Fallback", { mime }), "warn");
       }
     }
     if (isAv1 && !conn.warnedCodec) {
       conn.warnedCodec = true;
-      log(`[${peerLabel(peerId)}] Negotiated codec: video/AV1`, "ok");
+      log(t("log.codecIsAv1", { peer: peerLabel(peerId) }), "ok");
     }
   }
 
@@ -843,7 +982,7 @@ function collectStats(peerId, conn, stats) {
   if (typeof rtp.framesPerSecond === "number") d.fps = `${Math.round(rtp.framesPerSecond)} fps`;
 
   const impl = ROLE === "streamer" ? rtp.encoderImplementation : rtp.decoderImplementation;
-  if (impl) d.impl = `${impl}${rtp.powerEfficientEncoder || rtp.powerEfficientDecoder ? " (power efficient)" : ""}`;
+  if (impl) d.impl = `${impl}${rtp.powerEfficientEncoder || rtp.powerEfficientDecoder ? t("diag.implPowerEfficient") : ""}`;
 
   const bytes = ROLE === "streamer" ? rtp.bytesSent : rtp.bytesReceived;
   if (typeof bytes === "number") {
@@ -912,8 +1051,8 @@ function resolveRoomId() {
     input.value = id;
   }
   if (!ROOM_ID_RE.test(id)) {
-    log(`Invalid room ID \u201c${id}\u201d. Use 3\u201324 chars: a\u2013z, 0\u20139, - or _, starting with a letter or number.`, "bad");
-    showAlert("Room ID must be 3\u201324 characters (a\u2013z, 0\u20139, - or _), starting with a letter or number.", "bad");
+    log(t("log.roomIdInvalid", { id }), "bad");
+    showAlert(t("alert.roomIdInvalid"), "bad");
     return null;
   }
   return id;
@@ -921,9 +1060,9 @@ function resolveRoomId() {
 
 // Capture the display. Audio is best-effort and depends on the browser, OS and
 // the source the user picks (tabs carry tab audio; screens can carry system
-// audio; a single window usually has none unless the browser supports
-// "windowAudio"). The systemAudio/windowAudio hints below let Chrome offer
-// audio for window/screen shares too; other browsers ignore unknown options.
+// audio; a window carries only its own audio where the browser supports
+// "windowAudio"). The systemAudio/windowAudio hints below tell Chrome which
+// audio to offer for each source; other browsers ignore unknown options.
 // A real denial/cancel is still surfaced as an error.
 async function getDisplayStream(fps, wantAudio) {
   const video = { frameRate: fps };
@@ -933,11 +1072,11 @@ async function getDisplayStream(fps, wantAudio) {
       video,
       audio: true,
       systemAudio: "include", // offer system audio (screens) where possible
-      windowAudio: "system",  // offer system audio when a window is picked
+      windowAudio: "window",  // window shares: only the picked window's audio
     });
   } catch (e) {
     if (e && (e.name === "TypeError" || e.name === "NotSupportedError")) {
-      log(`This browser/source rejected audio capture (${e.name}); retrying with video only.`, "warn");
+      log(t("log.audioRejected", { name: e.name }), "warn");
       return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
     }
     throw e;
@@ -957,11 +1096,9 @@ async function startSharing() {
   try {
     localStream = await getDisplayStream(fps, wantAudio);
   } catch (e) {
-    log(`Screen capture failed: ${e.name}: ${e.message}`, "bad");
+    log(t("log.captureFailed", { name: e.name, message: e.message }), "bad");
     showAlert(
-      window.isSecureContext
-        ? "Screen capture was cancelled or denied."
-        : "Screen capture requires a secure context (HTTPS or localhost).",
+      window.isSecureContext ? t("alert.captureDenied") : t("alert.captureInsecure"),
       "bad"
     );
     $("startBtn").disabled = false;
@@ -969,13 +1106,13 @@ async function startSharing() {
   }
   const audioTracks = localStream.getAudioTracks();
   if (wantAudio && audioTracks.length === 0) {
-    log("The selected source provided no audio track. Tabs and screens can share audio; a single window usually cannot \u2014 try a Chrome tab or the entire screen with \u201cShare system audio\u201d. Sharing video only.", "warn");
+    log(t("log.noAudioTrack"), "warn");
   } else if (audioTracks.length) {
-    log(`Audio capture enabled at ${fps} fps video; the audio track will be sent to each viewer.`);
+    log(t("log.audioEnabled", { fps }));
   } else {
-    log(`Sharing video only at ${fps} fps.`);
+    log(t("log.videoOnly", { fps }));
   }
-  log(`Quality preset: ${presetLabel()}.`);
+  log(t("log.qualityPreset", { label: presetLabel() }));
   const videoTrack = localStream.getVideoTracks()[0];
   // Hint the encoder that this is screen content so it favours sharp detail
   // (text/UI) over motion. Browsers that don't support it ignore the hint.
@@ -985,7 +1122,7 @@ async function startSharing() {
   video.muted = true;
   setVideoActive(true);
   videoTrack.addEventListener("ended", () => {
-    log("Screen capture ended by the browser.", "warn");
+    log(t("log.captureEnded"), "warn");
     stopSharing();
   });
   $("stopBtn").disabled = false;
@@ -1024,9 +1161,9 @@ function stopSharing() {
   $("preferAv1").disabled = false;
   $("shareAudio").disabled = false;
   $("roomId").disabled = false;
-  setField("dSignaling", "idle");
+  setField("dSignaling", t("signal.idle"));
   resetStatsFields();
-  log("Sharing stopped.");
+  log(t("log.sharingStopped"));
 }
 
 async function joinRoom() {
@@ -1035,18 +1172,23 @@ async function joinRoom() {
     await connectSignaling(roomFromUrl, "viewer");
   } catch (e) {
     // The close handler schedules a retry; the room may just not exist yet.
-    log(`${e.message}; retrying\u2026`, "warn");
+    log(t("log.retrying", { message: e.message }), "warn");
   }
 }
 
 // ---------- Init ----------
 
 function init() {
-  $("role").textContent = ROLE === "streamer" ? "Streamer" : `Viewer \u00b7 room ${roomFromUrl}`;
+  $("role").textContent = ROLE === "streamer" ? t("role.host") : t("role.viewer", { room: roomFromUrl });
+  const subtitle = $("subtitle");
+  if (subtitle) {
+    subtitle.textContent = ROLE === "viewer" ? t("sub.viewer") : t("sub.host");
+  }
   reportSupport();
   // Start muted so autoplay is permitted; viewers opt into audio via the
-  // video controls' speaker icon.
-  $("video").muted = true;
+  // video controls' speaker icon. The host preview always stays muted, while a
+  // viewer's saved volume/mute is applied (unmuted is restored after playback).
+  applyAudioState($("video"), ROLE === "streamer" ? { volume: 1, muted: true } : loadAudioPrefs());
   $("peerSelect").addEventListener("change", (e) => setFocused(e.target.value || null));
   $("quality").addEventListener("change", async () => {
     setField("dQuality", presetLabel());
@@ -1060,7 +1202,7 @@ function init() {
       }
     }
     if (conns.size) {
-      log(`Quality preset set to \u201c${presetLabel()}\u201d.`);
+      log(t("log.qualityChanged", { label: presetLabel() }));
       await applyQualityToAllSenders();
     }
   });
@@ -1068,9 +1210,9 @@ function init() {
     const btn = $("copyBtn");
     try {
       await navigator.clipboard.writeText($("roomUrl").value);
-      log("Link copied.");
+      log(t("log.linkCopied"));
       const oldHtml = btn.innerHTML;
-      btn.innerHTML = `<svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg><span>Copied!</span>`;
+      btn.innerHTML = `<svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg><span>${t("app.copied")}</span>`;
       btn.classList.add("copied");
       setTimeout(() => {
         btn.innerHTML = oldHtml;
@@ -1078,9 +1220,71 @@ function init() {
       }, 2000);
     } catch {
       $("roomUrl").select();
-      log("Clipboard unavailable; link selected \u2014 copy it manually.", "warn");
+      log(t("log.clipboardUnavailable"), "warn");
     }
   });
+
+  const roomLink = () => $("roomUrl").value;
+
+  const shareBtn = $("shareBtn");
+  if (shareBtn && typeof navigator.share === "function") {
+    shareBtn.hidden = false;
+    shareBtn.addEventListener("click", async () => {
+      try {
+        await navigator.share({ title: "Golive", text: t("share.text"), url: roomLink() });
+        log(t("log.linkShared"));
+      } catch { /* dismissed or unsupported */ }
+    });
+  }
+
+  const qrModal = $("qrModal");
+  if (qrModal && $("qrBtn")) {
+    const closeQr = () => {
+      qrModal.hidden = true;
+      $("qrBox").innerHTML = "";
+    };
+    $("qrBtn").addEventListener("click", () => {
+      try {
+        $("qrBox").innerHTML = (typeof QR !== "undefined")
+          ? QR.svg(roomLink(), { ecc: "M", margin: 2, label: t("qr.title") })
+          : "";
+        if (!$("qrBox").innerHTML) throw new Error("no QR");
+      } catch {
+        log(t("log.qrFailed"), "warn");
+        return;
+      }
+      qrModal.hidden = false;
+      $("qrCloseBtn").focus();
+    });
+    $("qrCloseBtn").addEventListener("click", closeQr);
+    qrModal.addEventListener("click", (e) => {
+      if (e.target === qrModal) closeQr();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !qrModal.hidden) closeQr();
+    });
+    $("qrCopyBtn").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(roomLink());
+        log(t("log.linkCopied"));
+      } catch { /* clipboard unavailable */ }
+    });
+  }
+
+  // Viewers keep the Log collapsed behind a toggle; the host leaves it open.
+  const logToggle = $("logToggle");
+  if (logToggle && ROLE !== "streamer") {
+    const logEl = $("log");
+    const label = logToggle.querySelector("span");
+    const setOpen = (open) => {
+      logEl.hidden = !open;
+      logToggle.setAttribute("aria-expanded", String(open));
+      if (label) label.textContent = t(open ? "log.hide" : "log.show");
+    };
+    logToggle.hidden = false;
+    setOpen(false);
+    logToggle.addEventListener("click", () => setOpen($("log").hidden));
+  }
 
   const clearBtn = $("clearLogBtn");
   if (clearBtn) {
@@ -1098,9 +1302,16 @@ function init() {
     });
   }
   $("video").addEventListener("volumechange", () => {
-    if (!$("video").muted) {
+    const video = $("video");
+    if (video.volume !== audioState.volume || video.muted !== audioState.muted) {
+      audioState = { volume: video.volume, muted: video.muted };
+      saveAudioPrefs();
+    }
+    if (!video.muted) {
       const hint = $("audioHint");
       if (hint) hint.hidden = true;
+    } else {
+      checkAudioHint();
     }
   });
 
@@ -1122,11 +1333,17 @@ function init() {
     for (const [key, p] of Object.entries(QUALITY_PRESETS)) {
       const opt = document.createElement("option");
       opt.value = key;
-      opt.textContent = p.short || p.label;
-      opt.title = p.label;
+      opt.textContent = t(p.shortKey);
+      opt.title = t(p.labelKey);
       qsel.appendChild(opt);
     }
-    qsel.value = "1080p60";
+    const prefs = loadPrefs();
+    qsel.value = QUALITY_PRESETS[prefs.quality] ? prefs.quality : "1080p60";
+    if (typeof prefs.preferAv1 === "boolean") $("preferAv1").checked = prefs.preferAv1;
+    if (typeof prefs.shareAudio === "boolean") $("shareAudio").checked = prefs.shareAudio;
+    qsel.addEventListener("change", () => savePrefs({ quality: qsel.value }));
+    $("preferAv1").addEventListener("change", () => savePrefs({ preferAv1: $("preferAv1").checked }));
+    $("shareAudio").addEventListener("change", () => savePrefs({ shareAudio: $("shareAudio").checked }));
     setField("dQuality", presetLabel());
     $("dViewersLabel").hidden = false;
     $("dViewers").hidden = false;
