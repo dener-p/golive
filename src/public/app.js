@@ -7,7 +7,18 @@
 const $ = (id) => document.getElementById(id);
 
 // STUN only. No TURN on purpose: if no direct path exists, ICE fails visibly.
-const RTC_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+// A few STUN servers spread across networks so one that is blocked or
+// unreachable does not cost us candidates. Cloudflare's is dual-stack and can
+// return an IPv6 server-reflexive candidate when the network has working IPv6,
+// which is what makes a NAT-free (direct) path possible.
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+    { urls: "stun:stun.cloudflare.com:3478" },
+  ],
+  // Pre-gather ICE candidates so the first offer/answer starts connecting sooner.
+  iceCandidatePoolSize: 2,
+};
 
 // Opus tuning for shared tab/system audio. Opus is negotiated through SDP, not
 // setParameters, so `preferOpus()` edits the offer's fmtp line. The default cap
@@ -43,9 +54,15 @@ let signalingRoom = null;
 let signalingRole = null;
 
 const STAT_FIELDS = [
-  "dPair", "dPath", "dRtt", "dCodec", "dRes",
-  "dFps", "dBitrate", "dAudioCodec", "dAudioBitrate", "dImpl", "dCands",
+  "dPair", "dPath", "dIpv6", "dRtt", "dLoss", "dJitter", "dFreeze",
+  "dCodec", "dRes", "dFps", "dLimit", "dBitrate", "dUpload",
+  "dAudioCodec", "dAudioBitrate", "dImpl", "dCands",
 ];
+
+// Total upload above this (Mbps) usually means the host's connection will
+// struggle to feed every viewer; the diagnostics warns once when it crosses.
+const UPLOAD_WARN_MBPS = 25;
+let uploadWarned = false;
 
 // ---------- UI helpers ----------
 
@@ -119,6 +136,25 @@ function applyAudioState(video, prefs) {
   video.muted = prefs.muted;
 }
 
+// Viewer volume-control icons (unmuted / muted).
+const VOL_ICON_ON = `<svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`;
+const VOL_ICON_OFF = `<svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>`;
+
+// Reflect the video element's volume/mute in the viewer's volume bar.
+function syncVolumeUI() {
+  const video = $("video");
+  const slider = $("volume");
+  if (!video || !slider) return;
+  slider.value = String(video.volume);
+  const pct = $("volumePct");
+  if (pct) pct.textContent = `${Math.round(video.volume * 100)}%`;
+  const btn = $("volMuteBtn");
+  if (btn) {
+    btn.innerHTML = video.muted || video.volume === 0 ? VOL_ICON_OFF : VOL_ICON_ON;
+    btn.setAttribute("aria-pressed", String(video.muted));
+  }
+}
+
 function resetStatValues() {
   STAT_FIELDS.forEach((id) => setField(id, "\u2013"));
 }
@@ -148,11 +184,12 @@ function checkAudioHint() {
   const hint = $("audioHint");
   const vid = $("video");
   if (!hint || !vid) return;
-  if (ROLE === "viewer" && vid.srcObject && vid.srcObject.getAudioTracks().length > 0 && vid.muted) {
-    hint.hidden = false;
-  } else {
-    hint.hidden = true;
-  }
+  // The volume bar is only useful once the remote stream actually carries audio.
+  const hasAudio = ROLE === "viewer" && vid.srcObject && vid.srcObject.getAudioTracks().length > 0;
+  const bar = $("volumeBar");
+  if (bar) bar.hidden = !hasAudio;
+  hint.hidden = !(hasAudio && vid.muted);
+  if (hasAudio) syncVolumeUI();
 }
 
 function resetStatsFields() {
@@ -233,6 +270,7 @@ const QUALITY_PRESETS = {
   "4k60": {
     labelKey: "preset.4k60",
     shortKey: "preset.4k60.short",
+    contentHint: "detail",
     maxBitrate: 40_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -243,6 +281,7 @@ const QUALITY_PRESETS = {
   "4k30": {
     labelKey: "preset.4k30",
     shortKey: "preset.4k30.short",
+    contentHint: "detail",
     maxBitrate: 25_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -253,6 +292,7 @@ const QUALITY_PRESETS = {
   "1440p60": {
     labelKey: "preset.1440p60",
     shortKey: "preset.1440p60.short",
+    contentHint: "detail",
     maxBitrate: 20_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -263,6 +303,7 @@ const QUALITY_PRESETS = {
   "1080p60": {
     labelKey: "preset.1080p60",
     shortKey: "preset.1080p60.short",
+    contentHint: "detail",
     maxBitrate: 12_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -273,6 +314,7 @@ const QUALITY_PRESETS = {
   "1080p30": {
     labelKey: "preset.1080p30",
     shortKey: "preset.1080p30.short",
+    contentHint: "detail",
     maxBitrate: 8_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -286,6 +328,7 @@ const QUALITY_PRESETS = {
   text: {
     labelKey: "preset.text",
     shortKey: "preset.text.short",
+    contentHint: "detail",
     maxBitrate: 8_000_000,
     maxFramerate: 15,
     captureFps: 15,
@@ -296,6 +339,7 @@ const QUALITY_PRESETS = {
   "720p30": {
     labelKey: "preset.720p30",
     shortKey: "preset.720p30.short",
+    contentHint: "detail",
     maxBitrate: 4_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -306,6 +350,9 @@ const QUALITY_PRESETS = {
   low: {
     labelKey: "preset.low",
     shortKey: "preset.low.short",
+    // Data saver already prefers framerate over resolution; "motion" makes the
+    // encoder spend its few bits on smoothness rather than per-frame detail.
+    contentHint: "motion",
     maxBitrate: 1_000_000,
     maxFramerate: 24,
     captureFps: 24,
@@ -316,6 +363,7 @@ const QUALITY_PRESETS = {
   auto: {
     labelKey: "preset.auto",
     shortKey: "preset.auto.short",
+    contentHint: "detail",
     maxBitrate: null,
     maxFramerate: null,
     captureFps: 60,
@@ -335,16 +383,22 @@ function presetLabel(key = currentPresetKey()) {
   return t(p.labelKey);
 }
 
-// Encoded resolution follows the preset's target height instead of a fixed
-// factor, so a large capture is scaled to the resolution its bitrate budget
-// was chosen for (and never upscaled).
+// Encoded resolution follows the preset's target instead of a fixed factor, so
+// a large capture is scaled to the resolution its bitrate budget was chosen for
+// (and never upscaled). The scale fits the capture into a 16:9 box of the
+// preset's target height using whichever ratio is larger, so an ultrawide or
+// portrait screen does not blow past the target width and overshoot the budget.
 function scaleForPreset(preset, sender) {
   const track = sender.track;
-  const height = track && typeof track.getSettings === "function" ? track.getSettings().height : 0;
-  if (preset.targetHeight && height) {
+  const settings = track && typeof track.getSettings === "function" ? track.getSettings() : null;
+  const w = settings && settings.width ? settings.width : 0;
+  const h = settings && settings.height ? settings.height : 0;
+  if (preset.targetHeight && w && h) {
+    const targetW = (preset.targetHeight * 16) / 9;
+    const targetH = preset.targetHeight;
     // Never upscale: scaleResolutionDownBy must be >= 1, so a capture smaller
     // than the preset's target is left at its native size.
-    const scale = Math.max(1, height / preset.targetHeight);
+    const scale = Math.max(1, Math.max(w / targetW, h / targetH));
     return Math.round(scale * 100) / 100;
   }
   return preset.scaleResolutionDownBy || 1;
@@ -541,6 +595,9 @@ function createPc(peerId) {
     prevAudioBytes: null,
     warnedCodec: false,
     candCounts: { local: {}, total: 0 },
+    // What kinds of local candidate we managed to gather, used to explain an
+    // ICE failure. "mdns" is Chrome's anonymized .local host candidate.
+    gathered: { host: false, srflx: false, relay: false, mdns: false, srflx6: false, host6: false },
     display: null,
     iceRestartTimer: null,
     iceRestarts: 0,
@@ -613,6 +670,7 @@ function closeConn(peerId) {
   if (focusedId === peerId) focusedId = conns.size ? conns.keys().next().value : null;
   updatePeerSelect();
   updateViewerCount();
+  updateReconnectBtn();
 
   const next = focusedId ? conns.get(focusedId) : null;
   if (next && next.pc) {
@@ -664,6 +722,7 @@ function setFocused(peerId) {
     setField("dPc", conn.pc.connectionState || "\u2013");
   }
   updatePeerSelect();
+  updateReconnectBtn();
   renderFocused();
 }
 
@@ -687,12 +746,64 @@ function onIceState(peerId) {
 
   if (peerId !== focusedId) return;
   setField("dIce", s, iceClass(s));
+  updateReconnectBtn();
   if (s === "failed") {
-    showAlert(t("alert.iceFailed"), "bad");
+    const hint = failureHints(conn);
+    if (hint) log(hint, "warn");
+    showAlert(hint ? `${t("alert.iceFailed")} ${hint}` : t("alert.iceFailed"), "bad");
   } else if (s === "disconnected") {
     showAlert(t("alert.iceDisconnected"), "warn");
   } else if (s === "connected" || s === "completed") {
     clearAlert();
+  }
+}
+
+// Best-effort explanation of an ICE failure from the candidates we gathered.
+// mDNS host candidates (Chrome's anonymized .local) mean the peers could be on
+// the same network, so a local cause — router client isolation or a
+// Public-network firewall — is worth naming. No srflx/relay at all means STUN
+// never produced a public address, so UDP/STUN is probably blocked by a
+// firewall or VPN. The two hints can both apply.
+function failureHints(conn) {
+  const g = conn.gathered;
+  const parts = [];
+  if (g.mdns) parts.push(t("hint.iceLan"));
+  if (!g.srflx && !g.relay) parts.push(t("hint.iceNoStun"));
+  return parts.join(" ");
+}
+
+// The manual Reconnect button is offered only while the focused connection is
+// down, so it appears exactly when the automatic recovery has not (yet) worked.
+function updateReconnectBtn() {
+  const btn = $("reconnectBtn");
+  if (!btn) return;
+  const conn = focusedId ? conns.get(focusedId) : null;
+  const s = conn && conn.pc ? conn.pc.iceConnectionState : "";
+  btn.hidden = !(s === "failed" || s === "disconnected");
+}
+
+// Manual recovery for the focused connection. A streamer forces an ICE restart
+// (bypassing the automatic cap); a viewer re-opens signaling, which re-registers
+// it and makes the streamer send a fresh offer that rebuilds the connection.
+async function manualReconnect() {
+  if (ROLE === "streamer") {
+    const conn = focusedId ? conns.get(focusedId) : null;
+    if (!conn) return;
+    conn.iceRestarts = 0;
+    cancelIceRestart(conn);
+    log(t("log.manualReconnect", { peer: peerLabel(focusedId) }), "warn");
+    await doIceRestart(focusedId);
+    return;
+  }
+  log(t("log.manualReconnectViewer"), "warn");
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  stopReconnecting();
+  closeAllConns();
+  showWaiting();
+  try {
+    await connectSignaling(roomFromUrl, "viewer");
+  } catch {
+    scheduleReconnect();
   }
 }
 
@@ -753,6 +864,18 @@ function noteLocalCandidate(peerId, conn, c) {
   const key = `${family} ${type}`;
   conn.candCounts.local[key] = (conn.candCounts.local[key] || 0) + 1;
   conn.candCounts.total++;
+  // Remember what we gathered, both to explain failures and to track IPv6:
+  // server-reflexive means a real, publicly reachable path; host-only usually
+  // means the firewall blocks inbound.
+  const g = conn.gathered;
+  if (type === "srflx") g.srflx = true;
+  else if (type === "host") g.host = true;
+  else if (type === "relay") g.relay = true;
+  if (family === "mDNS") g.mdns = true;
+  if (family === "IPv6") {
+    if (type === "srflx") g.srflx6 = true;
+    else if (type === "host") g.host6 = true;
+  }
   if (peerId === focusedId) {
     setField("dCands", Object.entries(conn.candCounts.local).map(([k, v]) => `${k} \u00d7${v}`).join(", "));
   }
@@ -777,6 +900,10 @@ function preferOpus(sdp) {
     }
   }
   params.set("maxaveragebitrate", String(OPUS_MAX_BITRATE));
+  // In-band FEC lets audio survive packet loss (common on Wi-Fi), and DTX stops
+  // sending during silence, which matters when each viewer is its own stream.
+  params.set("useinbandfec", "1");
+  params.set("usedtx", "1");
   if (OPUS_STEREO) {
     params.set("stereo", "1");
     params.set("sprop-stereo", "1");
@@ -926,6 +1053,20 @@ function collectStats(peerId, conn, stats) {
     }
   }
 
+  // Whether this browser actually gathered an IPv6 server-reflexive candidate
+  // for this connection. "srflx" is the useful one (a public, reachable IPv6);
+  // host-only IPv6 usually means the router/OS firewall is dropping inbound.
+  if (conn.gathered.srflx6) {
+    d.ipv6 = t("ipv6.srflx");
+    d.ipv6Cls = "ok";
+  } else if (conn.gathered.host6) {
+    d.ipv6 = t("ipv6.hostOnly");
+    d.ipv6Cls = "warn";
+  } else {
+    d.ipv6 = t("ipv6.none");
+    d.ipv6Cls = "";
+  }
+
   // Audio stats (best-effort; absent when no audio is being shared).
   const audioRtpType = ROLE === "streamer" ? "outbound-rtp" : "inbound-rtp";
   let audioRtp = null;
@@ -984,13 +1125,56 @@ function collectStats(peerId, conn, stats) {
   const impl = ROLE === "streamer" ? rtp.encoderImplementation : rtp.decoderImplementation;
   if (impl) d.impl = `${impl}${rtp.powerEfficientEncoder || rtp.powerEfficientDecoder ? t("diag.implPowerEfficient") : ""}`;
 
+  // Why the encoder is limiting quality. Streamer-only: the value says whether
+  // the drop is CPU-bound or bandwidth-bound, which raw fps/bitrate cannot.
+  if (ROLE === "streamer" && rtp.qualityLimitationReason) {
+    const reason = rtp.qualityLimitationReason;
+    d.limit = t(reason === "bandwidth" ? "limit.bandwidth" : reason === "cpu" ? "limit.cpu" : reason === "none" ? "limit.none" : "limit.other");
+    d.limitCls = reason === "none" ? "ok" : "warn";
+  }
+
   const bytes = ROLE === "streamer" ? rtp.bytesSent : rtp.bytesReceived;
+  conn.bitrateBps = 0;
   if (typeof bytes === "number") {
     if (conn.prevBytes && rtp.timestamp > conn.prevBytes.ts) {
       const bps = ((bytes - conn.prevBytes.bytes) * 8) / ((rtp.timestamp - conn.prevBytes.ts) / 1000);
       d.bitrate = `${(bps / 1e6).toFixed(2)} Mbps`;
+      conn.bitrateBps = bps;
     }
     conn.prevBytes = { bytes, ts: rtp.timestamp };
+  }
+
+  // Packet loss and jitter. A viewer reads its inbound-rtp; a streamer reads the
+  // receiver's remote-inbound-rtp report, which is the viewer's point of view.
+  // Loss is the best early signal that a "connected" stream will still look bad.
+  let recv = null;
+  if (ROLE === "viewer") {
+    recv = rtp; // inbound-rtp
+  } else {
+    stats.forEach((r) => {
+      if (r.type === "remote-inbound-rtp" && (r.kind || r.mediaType) === "video") recv = r;
+    });
+  }
+  if (recv) {
+    const lost = recv.packetsLost;
+    const total = ROLE === "viewer" ? (lost || 0) + (recv.packetsReceived || 0) : rtp.packetsSent;
+    if (typeof lost === "number" && typeof total === "number" && total > 0) {
+      const pct = (lost / total) * 100;
+      d.loss = `${pct.toFixed(1)}%`;
+      d.lossCls = pct >= 5 ? "bad" : pct >= 1 ? "warn" : "ok";
+    }
+    if (typeof recv.jitter === "number") {
+      const jms = recv.jitter * 1000;
+      d.jitter = `${Math.round(jms)} ms`;
+      d.jitterCls = jms >= 100 ? "warn" : "";
+    }
+  }
+
+  // Freezes/stalls are only reported by the receiving side.
+  if (ROLE === "viewer" && typeof rtp.freezeCount === "number") {
+    const secs = typeof rtp.totalFreezesDuration === "number" ? rtp.totalFreezesDuration : 0;
+    d.freeze = `${rtp.freezeCount}\u00d7${secs ? ` \u00b7 ${secs.toFixed(1)}s` : ""}`;
+    d.freezeCls = rtp.freezeCount > 0 ? "warn" : "";
   }
 
   conn.display = d;
@@ -999,20 +1183,73 @@ function collectStats(peerId, conn, stats) {
 function renderFocused() {
   const conn = focusedId ? conns.get(focusedId) : null;
   const d = conn && conn.display;
-  if (!d) { resetStatValues(); return; }
-  setField("dPair", d.pair || "\u2013");
-  setField("dPath", d.path || "\u2013", d.pathCls || "");
-  setField("dRtt", d.rtt || "\u2013");
-  setField("dCodec", d.codec || "\u2013", d.codecCls || "");
-  setField("dRes", d.res || "\u2013");
-  setField("dFps", d.fps || "\u2013");
-  setField("dBitrate", d.bitrate || "\u2013");
-  setField("dAudioCodec", d.audioCodec || "\u2013", d.audioCodecCls || "");
-  setField("dAudioBitrate", d.audioBitrate || "\u2013");
-  setField("dImpl", d.impl || "\u2013");
-  setField("dCands", conn.candCounts.total
-    ? Object.entries(conn.candCounts.local).map(([k, v]) => `${k} \u00d7${v}`).join(", ")
-    : "\u2013");
+  if (d) {
+    setField("dPair", d.pair || "\u2013");
+    setField("dPath", d.path || "\u2013", d.pathCls || "");
+    setField("dIpv6", d.ipv6 || "\u2013", d.ipv6Cls || "");
+    setField("dRtt", d.rtt || "\u2013");
+    setField("dLoss", d.loss || "\u2013", d.lossCls || "");
+    setField("dJitter", d.jitter || "\u2013", d.jitterCls || "");
+    setField("dFreeze", d.freeze || "\u2013", d.freezeCls || "");
+    setField("dCodec", d.codec || "\u2013", d.codecCls || "");
+    setField("dRes", d.res || "\u2013");
+    setField("dFps", d.fps || "\u2013");
+    setField("dLimit", d.limit || "\u2013", d.limitCls || "");
+    setField("dBitrate", d.bitrate || "\u2013");
+    setField("dAudioCodec", d.audioCodec || "\u2013", d.audioCodecCls || "");
+    setField("dAudioBitrate", d.audioBitrate || "\u2013");
+    setField("dImpl", d.impl || "\u2013");
+    setField("dCands", conn.candCounts.total
+      ? Object.entries(conn.candCounts.local).map(([k, v]) => `${k} \u00d7${v}`).join(", ")
+      : "\u2013");
+  } else {
+    resetStatValues();
+  }
+
+  // Streamer: total upload actually leaving the machine (one encoder per viewer)
+  // is what decides how many viewers fit before the connection saturates.
+  if (ROLE === "streamer") {
+    let totalBps = 0;
+    for (const c of conns.values()) totalBps += c.bitrateBps || 0;
+    const mbps = totalBps / 1e6;
+    setField("dUpload", conns.size ? `${mbps.toFixed(2)} Mbps \u00b7 ${conns.size}` : "\u2013", mbps >= UPLOAD_WARN_MBPS ? "warn" : "");
+    if (conns.size === 0) {
+      uploadWarned = false;
+    } else if (mbps >= UPLOAD_WARN_MBPS && !uploadWarned) {
+      uploadWarned = true;
+      log(t("log.uploadHigh", { mbps: mbps.toFixed(0), count: conns.size }), "warn");
+    }
+  }
+}
+
+// Build a plain-text snapshot of the diagnostics panel and the log, so a host or
+// viewer can paste an exact report instead of describing the problem.
+function diagnosticsText() {
+  const lines = [];
+  lines.push("Golive diagnostics");
+  lines.push(`time: ${new Date().toISOString()}`);
+  lines.push(`role: ${ROLE}`);
+  lines.push(`room: ${roomId || roomFromUrl || "-"}`);
+  lines.push(`focused: ${focusedId || "-"}`);
+  lines.push(`ua: ${navigator.userAgent}`);
+  const dl = document.querySelector(".panel dl");
+  if (dl) {
+    const nodes = [...dl.children];
+    for (let i = 0; i < nodes.length; i++) {
+      const dt = nodes[i];
+      if (dt.tagName !== "DT" || dt.hidden) continue;
+      const dd = nodes[i + 1];
+      if (!dd || dd.tagName !== "DD" || dd.hidden) continue;
+      if (dd.querySelector("select, input")) continue; // e.g. the viewer picker
+      lines.push(`${dt.textContent.trim()}: ${dd.textContent.trim()}`);
+    }
+  }
+  const logEl = $("log");
+  if (logEl && logEl.textContent.trim()) {
+    lines.push("--- log ---");
+    lines.push(logEl.textContent.trim());
+  }
+  return lines.join("\n");
 }
 
 // ---------- Streamer / viewer flows ----------
@@ -1114,9 +1351,11 @@ async function startSharing() {
   }
   log(t("log.qualityPreset", { label: presetLabel() }));
   const videoTrack = localStream.getVideoTracks()[0];
-  // Hint the encoder that this is screen content so it favours sharp detail
-  // (text/UI) over motion. Browsers that don't support it ignore the hint.
-  try { videoTrack.contentHint = "detail"; } catch { /* hint unsupported */ }
+  // Hint the encoder what this content is (from the preset): screen content is
+  // mostly static text/UI, which "detail" keeps sharp, while the bandwidth-tight
+  // presets trade sharpness for smoothness with "motion". Browsers that don't
+  // support the hint ignore it.
+  try { videoTrack.contentHint = preset.contentHint || "detail"; } catch { /* hint unsupported */ }
   const video = $("video");
   video.srcObject = localStream;
   video.muted = true;
@@ -1130,6 +1369,7 @@ async function startSharing() {
   $("shareAudio").disabled = true;
   $("roomId").disabled = true;
   setField("dQuality", presetLabel());
+  requestWakeLock();
   try {
     await connectSignaling(roomId, "streamer");
   } catch (e) {
@@ -1142,6 +1382,7 @@ async function startSharing() {
 
 function stopSharing() {
   closeAllConns();
+  releaseWakeLock();
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
@@ -1167,6 +1408,7 @@ function stopSharing() {
 }
 
 async function joinRoom() {
+  requestWakeLock();
   showWaiting();
   try {
     await connectSignaling(roomFromUrl, "viewer");
@@ -1175,6 +1417,30 @@ async function joinRoom() {
     log(t("log.retrying", { message: e.message }), "warn");
   }
 }
+
+// Keep the screen awake while a stream is live (hosting or watching) so a phone
+// or laptop does not sleep mid-session. The browser drops the lock when the tab
+// is hidden, so it is re-acquired when the tab becomes visible again.
+let wakeLock = null;
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator) || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+    log(t("log.wakeLockOn"));
+  } catch { /* not allowed or the document is not visible */ }
+}
+
+function releaseWakeLock() {
+  if (!wakeLock) return;
+  try { wakeLock.release(); } catch { /* already released */ }
+  wakeLock = null;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && isLive() && !wakeLock) requestWakeLock();
+});
 
 // ---------- Init ----------
 
@@ -1189,7 +1455,17 @@ function init() {
   // video controls' speaker icon. The host preview always stays muted, while a
   // viewer's saved volume/mute is applied (unmuted is restored after playback).
   applyAudioState($("video"), ROLE === "streamer" ? { volume: 1, muted: true } : loadAudioPrefs());
+  syncVolumeUI();
   $("peerSelect").addEventListener("change", (e) => setFocused(e.target.value || null));
+  $("reconnectBtn").addEventListener("click", manualReconnect);
+  $("copyDiagBtn").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(diagnosticsText());
+      log(t("log.diagCopied"));
+    } catch {
+      log(t("log.clipboardUnavailable"), "warn");
+    }
+  });
   $("quality").addEventListener("change", async () => {
     setField("dQuality", presetLabel());
     const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
@@ -1200,6 +1476,7 @@ function init() {
           await vTrack.applyConstraints({ frameRate: preset.captureFps });
         } catch { /* ignore constraint errors if browser can't re-constrain */ }
       }
+      if (vTrack) { try { vTrack.contentHint = preset.contentHint || "detail"; } catch { /* hint unsupported */ } }
     }
     if (conns.size) {
       log(t("log.qualityChanged", { label: presetLabel() }));
@@ -1296,9 +1573,31 @@ function init() {
   const unmuteBtn = $("unmuteBtn");
   if (unmuteBtn) {
     unmuteBtn.addEventListener("click", () => {
-      $("video").muted = false;
+      const video = $("video");
+      video.muted = false;
+      if (video.volume === 0) video.volume = 1;
       const hint = $("audioHint");
       if (hint) hint.hidden = true;
+      syncVolumeUI();
+    });
+  }
+  const volSlider = $("volume");
+  if (volSlider) {
+    volSlider.addEventListener("input", () => {
+      const video = $("video");
+      video.volume = Number(volSlider.value);
+      // Dragging the slider up is an implicit request for sound.
+      if (video.volume > 0 && video.muted) video.muted = false;
+      syncVolumeUI();
+    });
+  }
+  const volMuteBtn = $("volMuteBtn");
+  if (volMuteBtn) {
+    volMuteBtn.addEventListener("click", () => {
+      const video = $("video");
+      video.muted = !video.muted;
+      if (!video.muted && video.volume === 0) video.volume = 1;
+      syncVolumeUI();
     });
   }
   $("video").addEventListener("volumechange", () => {
@@ -1313,6 +1612,7 @@ function init() {
     } else {
       checkAudioHint();
     }
+    syncVolumeUI();
   });
 
   if (ROLE === "streamer") {
@@ -1347,6 +1647,8 @@ function init() {
     setField("dQuality", presetLabel());
     $("dViewersLabel").hidden = false;
     $("dViewers").hidden = false;
+    $("dUploadLabel").hidden = false;
+    $("dUpload").hidden = false;
     $("dPeerLabel").hidden = false;
     $("dPeer").hidden = false;
     $("dQualityLabel").hidden = false;
@@ -1363,14 +1665,29 @@ function init() {
     }
     $("dViewersLabel").hidden = true;
     $("dViewers").hidden = true;
+    $("dUploadLabel").hidden = true;
+    $("dUpload").hidden = true;
     $("dPeerLabel").hidden = true;
     $("dPeer").hidden = true;
     $("dQualityLabel").hidden = true;
     $("dQuality").hidden = true;
+    // Picture-in-picture, only where the browser supports it.
+    const videoEl = $("video");
+    if (typeof videoEl.requestPictureInPicture === "function" && document.pictureInPictureEnabled) {
+      $("viewerControls").hidden = false;
+      $("pipBtn").addEventListener("click", async () => {
+        try {
+          if (document.pictureInPictureElement) await document.exitPictureInPicture();
+          else await videoEl.requestPictureInPicture();
+        } catch { /* not allowed until a video is playing */ }
+      });
+      videoEl.addEventListener("enterpictureinpicture", () => { $("pipLabel").textContent = t("app.exitPip"); });
+      videoEl.addEventListener("leavepictureinpicture", () => { $("pipLabel").textContent = t("app.pip"); });
+    }
     setVideoActive(false, true);
     joinRoom();
   }
-  window.addEventListener("beforeunload", () => { stopReconnecting(); if (ws) ws.close(); });
+  window.addEventListener("beforeunload", () => { releaseWakeLock(); stopReconnecting(); if (ws) ws.close(); });
 }
 
 init();

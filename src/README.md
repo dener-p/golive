@@ -50,12 +50,14 @@ domain, delete the `routes` entry and deploy to `golive.<account>.workers.dev`.
    streamer is not live yet, viewers see "Waiting for the streamer…" and connect
    the moment it starts. A bare room code in the address bar (`/test`) redirects
    to the canonical `/watch/test`.
-3. A viewer unmutes with the speaker icon in the video controls (audio starts
-   muted for autoplay-policy reasons). Viewers see only the player and
-   diagnostics, not the host controls. The viewer's volume and mute choice is
+3. A viewer controls sound from a **volume bar** above the player (a mute toggle,
+   a slider and a live percentage) or the speaker icon in the video controls;
+   audio starts muted for autoplay-policy reasons. Viewers see only the player
+   and diagnostics, not the host controls. The viewer's volume and mute choice is
    remembered on the next visit. For viewers the **Log** starts collapsed behind
    a toggle, and status messages and log lines are announced to screen readers
-   (`aria-live`).
+   (`aria-live`). Viewers can also pop the stream out into **picture-in-picture**
+   where the browser supports it.
 
 Shared links get a **link preview** (Open Graph/Twitter): the worker fills the
 meta tags per route, so `/watch/<id>` previews as “Golive — assistir à sala
@@ -79,12 +81,17 @@ Before starting, the streamer chooses:
   Text/sharp (15 fps, 8 Mbps), 720p/30fps (4 Mbps), Data saver (1 Mbps) or Auto.
   Each sets a bitrate ceiling,
   fps cap and resolution via `RTCRtpSender.setParameters()` and can be changed
-  live mid-share. The encoded resolution follows the preset (a 4K capture is
-  scaled to 1080p for the 1080p presets), and the high-resolution presets prefer
-  sharpness (`maintain-resolution`) since screen content is mostly static. The
+  live mid-share. The encoded resolution fits the capture into a 16:9 box of the
+  preset's target (a 4K capture is scaled to 1080p for the 1080p presets; an
+  ultrawide or portrait screen is scaled by its larger ratio so it does not
+  overshoot the target and its bitrate budget), and the high-resolution presets
+  prefer sharpness (`maintain-resolution`) since screen content is mostly static.
+  The
   achieved bitrate can be lower than the ceiling. **Text/sharp** spends its bits
   on detail instead of frames, so documents and code stay crisp when the content
-  barely moves. The chosen preset, **Prefer AV1** and **Share audio** are
+  barely moves. Each preset also sets the track's `contentHint` (`"detail"` for
+  the screen presets, `"motion"` for **Data saver**, which already prefers
+  framerate). The chosen preset, **Prefer AV1** and **Share audio** are
   remembered in `localStorage` for the next visit.
 
 ## Design notes
@@ -106,15 +113,29 @@ Before starting, the streamer chooses:
 - **AV1** is put first via `setCodecPreferences()` only when
   `getCapabilities("video")` reports it; every other codec (including RTX)
   stays as a fallback. The UI shows the codec that was *actually* negotiated.
-- **ICE** uses STUN (`stun:stun.l.google.com:19302`) only. **No TURN.** If no
-  direct path exists, ICE goes to `failed` and the UI says so. When a drop is
-  seen, the streamer (the offerer) retries the path with an **ICE restart**
+- **ICE** uses STUN only (**no TURN**): Google's two servers plus Cloudflare's
+  dual-stack one, and an `iceCandidatePoolSize` so candidates are ready before
+  the first offer. The redundancy means one blocked STUN does not cost us
+  candidates, and the dual-stack server is what yields an IPv6 server-reflexive
+  candidate when the network has working IPv6 (the NAT-free path). If no direct
+  path exists, ICE goes to `failed` and the UI says so. The diagnostics panel
+  reports separately whether an IPv6 srflx candidate was actually gathered, so
+  it is clear whether the IPv6 path was available. When a drop is seen, the
+  streamer (the offerer) retries the path with an **ICE restart**
   (`restartIce()` + a fresh offer, up to 3 times per connection), so a network
-  change can recover without tearing the session down.
+  change can recover without tearing the session down. When ICE fails, the alert
+  is annotated from the candidates that were gathered (see `failureHints()`): a
+  connection with only local/mDNS candidates points at a same-network problem
+  (router client isolation or a Public-network firewall), while no srflx at all
+  points at blocked UDP/STUN. While a connection is `disconnected` or `failed`,
+  the diagnostics panel offers a **Reconnect** button: the streamer forces an ICE
+  restart past the automatic cap, and a viewer re-opens signaling to receive a
+  fresh offer that rebuilds the connection.
 - **Audio** comes from the display stream (`getDisplayMedia({ audio: true })`)
   on its own transceiver using Opus. The offer's Opus `fmtp` is edited
-  (`preferOpus()`) to raise `maxaveragebitrate` to 128 kbps and request stereo,
-  since the browser default is only ~32 kbps. Best effort and source-dependent:
+  (`preferOpus()`) to raise `maxaveragebitrate` to 128 kbps, request stereo and
+  turn on in-band FEC (`useinbandfec=1`) plus silence suppression (`usedtx=1`),
+  since the browser default is only ~32 kbps and loss is common on Wi-Fi. Best effort and source-dependent:
   - **Chrome tab** - carries the tab's audio on all platforms.
   - **Entire screen** - carries system audio (Windows/ChromeOS; macOS 14.2+).
   - **Window** - carries only the picked window's audio where the browser
@@ -124,6 +145,16 @@ Before starting, the streamer chooses:
   When no audio track comes back, the app logs why and continues video-only.
 - **Reconnect**: the client reopens the signaling socket with backoff while it
   is live, so brief Worker restarts or network blips recover on their own.
+- **Diagnostics**: beyond the selected candidate pair and the negotiated codec,
+  the panel shows packet loss, jitter and (on a viewer) freezes, and the
+  streamer sees the **total upload** across all viewers — the number that decides
+  how many the connection can feed — with a one-time log warning past 25 Mbps.
+  The streamer also sees the encoder's **quality-limitation reason** (CPU vs
+  bandwidth), and a **Copy diagnostics** button snapshots the panel plus the log
+  to the clipboard for easy reporting.
+- **Wake lock**: while a stream is live (hosting or watching) the page holds a
+  Screen Wake Lock so the device does not sleep mid-session, re-acquiring it when
+  the tab becomes visible again.
 - Candidate logs show type and address family only; IP addresses are never
   displayed or stored. Anyone with the room link can join, so don't share
   private content.

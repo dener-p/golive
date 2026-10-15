@@ -71,6 +71,15 @@
       </div>
     </section>
 
+    <section class="controls viewer-controls" id="viewerControls" hidden>
+      <div class="controls-group">
+        <button id="pipBtn" class="btn-ghost" type="button" data-i18n-title="app.pip" title="Picture-in-picture">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1"/></svg>
+          <span id="pipLabel" data-i18n="app.pip">Picture-in-picture</span>
+        </button>
+      </div>
+    </section>
+
     <section id="linkRow" class="link-row" hidden>
       <span class="link-label">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
@@ -98,6 +107,12 @@
       <button id="unmuteBtn" data-i18n="app.unmute">Unmute</button>
     </div>
 
+    <section class="volume-bar" id="volumeBar" hidden>
+      <button id="volMuteBtn" class="btn-ghost" type="button" aria-pressed="false" data-i18n-title="app.volume" data-i18n-aria-label="app.volume" title="Volume" aria-label="Volume"></button>
+      <input id="volume" class="volume-slider" type="range" min="0" max="1" step="0.01" value="1" data-i18n-aria-label="app.volume" aria-label="Volume">
+      <span id="volumePct" class="volume-pct">100%</span>
+    </section>
+
     <section class="video-wrap">
       <div id="videoPlaceholder" class="video-placeholder">
         <div class="placeholder-icon">
@@ -115,20 +130,30 @@
     <section class="panel">
       <div class="panel-header">
         <h2 data-i18n="app.diagnostics">Diagnostics</h2>
+        <div class="panel-actions">
+          <button id="copyDiagBtn" class="btn-ghost" type="button" data-i18n="diag.copy">Copy diagnostics</button>
+          <button id="reconnectBtn" class="btn-ghost" type="button" hidden data-i18n="diag.reconnect">Reconnect</button>
+        </div>
       </div>
       <dl>
         <dt data-i18n="diag.signaling">Signaling</dt><dd id="dSignaling" data-i18n="signal.idle">idle</dd>
         <dt id="dViewersLabel" hidden data-i18n="diag.viewers">Connected viewers</dt><dd id="dViewers" hidden>0</dd>
+        <dt id="dUploadLabel" hidden data-i18n="diag.upload">Total upload</dt><dd id="dUpload" hidden>&ndash;</dd>
         <dt id="dPeerLabel" hidden data-i18n="diag.forViewer">Diagnostics for</dt><dd id="dPeer" hidden><div class="select-field peer-field"><select id="peerSelect"></select></div></dd>
         <dt data-i18n="diag.ice">ICE connection state</dt><dd id="dIce">new</dd>
         <dt data-i18n="diag.pc">Peer connection state</dt><dd id="dPc">&ndash;</dd>
         <dt data-i18n="diag.av1">AV1 support (this browser)</dt><dd id="dSupport">&ndash;</dd>
         <dt data-i18n="diag.pair">Selected candidate pair</dt><dd id="dPair">&ndash;</dd>
         <dt data-i18n="diag.path">Path</dt><dd id="dPath">&ndash;</dd>
+        <dt data-i18n="diag.ipv6">IPv6 candidate (reflexive)</dt><dd id="dIpv6">&ndash;</dd>
         <dt data-i18n="diag.rtt">Round-trip time</dt><dd id="dRtt">&ndash;</dd>
+        <dt data-i18n="diag.loss">Packet loss</dt><dd id="dLoss">&ndash;</dd>
+        <dt data-i18n="diag.jitter">Jitter</dt><dd id="dJitter">&ndash;</dd>
+        <dt data-i18n="diag.freeze">Freezes</dt><dd id="dFreeze">&ndash;</dd>
         <dt data-i18n="diag.videoCodec">Video codec (actual)</dt><dd id="dCodec">&ndash;</dd>
         <dt data-i18n="diag.res">Resolution</dt><dd id="dRes">&ndash;</dd>
         <dt data-i18n="diag.fps">Frame rate</dt><dd id="dFps">&ndash;</dd>
+        <dt data-i18n="diag.limit">Quality limit</dt><dd id="dLimit">&ndash;</dd>
         <dt data-i18n="diag.bitrate">Bitrate</dt><dd id="dBitrate">&ndash;</dd>
         <dt id="dQualityLabel" hidden data-i18n="diag.quality">Quality preset</dt><dd id="dQuality" hidden>&ndash;</dd>
         <dt data-i18n="diag.audioCodec">Audio codec (actual)</dt><dd id="dAudioCodec">&ndash;</dd>

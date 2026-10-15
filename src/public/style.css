@@ -478,6 +478,38 @@ select {
   opacity: 0.9;
 }
 
+/* Viewer volume control (mute toggle + slider + percentage) */
+.volume-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+}
+
+.volume-bar button {
+  padding: 5px 7px;
+}
+
+.volume-slider {
+  flex: 1;
+  min-width: 120px;
+  max-width: 260px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.volume-pct {
+  min-width: 36px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Alert */
 .alert {
   padding: 10px 14px;
