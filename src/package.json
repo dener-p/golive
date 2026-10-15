@@ -1,15 +1,16 @@
 {
-  "name": "webrtc-av1-ipv6-test",
-  "version": "0.1.0",
-  "description": "Browser screen-share connectivity/codec experiment: WebRTC, AV1 preference, IPv6 diagnostics",
+  "name": "golive",
+  "version": "0.2.0",
+  "description": "Golive: friends-only browser screen sharing over WebRTC, signaled by Cloudflare Workers + Durable Objects",
   "private": true,
-  "main": "server.js",
+  "main": "worker.js",
   "scripts": {
-    "start": "node server.js",
-    "test:signaling": "node test-signaling.js"
+    "dev": "wrangler dev --port 3000",
+    "start": "wrangler dev --port 3000",
+    "deploy": "wrangler deploy"
   },
-  "dependencies": {
-    "ws": "^8.18.0"
+  "devDependencies": {
+    "wrangler": "^4.151.0"
   },
   "engines": {
     "node": ">=18"

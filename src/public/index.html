@@ -3,38 +3,100 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WebRTC AV1 + IPv6 Test</title>
+  <title>Golive</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <header>
-    <h1>WebRTC AV1 + IPv6 test</h1>
-    <p class="sub">Connectivity/codec experiment. Anyone with the room URL can join &mdash; don't share private content.</p>
+    <div class="header-content">
+      <div class="header-titles">
+        <h1>Golive</h1>
+        <p class="sub">Share your screen with friends over a private link. Anyone with the room link can join &mdash; don't share private content.</p>
+      </div>
+      <span id="role" class="badge"></span>
+    </div>
   </header>
 
   <main>
-    <section class="controls">
-      <button id="startBtn" class="primary">Start sharing</button>
-      <button id="stopBtn" disabled>Stop</button>
-      <label class="check"><input type="checkbox" id="preferAv1" checked> Prefer AV1</label>
-      <span id="role" class="badge"></span>
+    <section class="controls" id="controlsBar">
+      <div class="controls-group streamer-actions streamer-only">
+        <button id="startBtn" class="primary">
+          <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+          <span>Start sharing</span>
+        </button>
+        <button id="stopBtn" class="danger" disabled>
+          <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>
+          <span>Stop</span>
+        </button>
+      </div>
+
+      <div class="controls-group streamer-options streamer-only">
+        <div class="text-field" id="wrapRoomId">
+          <label for="roomId">Room ID</label>
+          <input id="roomId" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" maxlength="24" placeholder="auto">
+          <button type="button" id="randomRoomBtn" title="Generate a random ID" aria-label="Generate a random ID">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+          </button>
+        </div>
+        <label class="check-pill" id="wrapPreferAv1">
+          <input type="checkbox" id="preferAv1" checked>
+          <span>Prefer AV1</span>
+        </label>
+        <label class="check-pill" id="wrapShareAudio">
+          <input type="checkbox" id="shareAudio" checked>
+          <span>Share audio</span>
+        </label>
+
+
+        <div class="select-field" id="wrapQuality">
+          <label for="quality">Quality</label>
+          <select id="quality"></select>
+        </div>
+      </div>
     </section>
 
     <section id="linkRow" class="link-row" hidden>
-      <input id="roomUrl" type="text" readonly>
-      <button id="copyBtn">Copy link</button>
+      <span class="link-label">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+        Room link
+      </span>
+      <input id="roomUrl" type="text" readonly spellcheck="false">
+      <button id="copyBtn">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>Copy link</span>
+      </button>
     </section>
 
     <div id="alert" class="alert" hidden></div>
 
+    <div id="audioHint" class="audio-hint" hidden>
+      <span>🔊 Stream audio available &mdash; starts muted by browser. Click to unmute.</span>
+      <button id="unmuteBtn">Unmute</button>
+    </div>
+
     <section class="video-wrap">
-      <video id="video" autoplay playsinline muted controls></video>
+      <div id="videoPlaceholder" class="video-placeholder">
+        <div class="placeholder-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+        </div>
+        <p id="placeholderText">Click &ldquo;Start sharing&rdquo; to begin screen capture</p>
+      </div>
+      <video id="video" autoplay playsinline controls hidden></video>
     </section>
 
     <section class="panel">
-      <h2>Diagnostics</h2>
+      <div class="panel-header">
+        <h2>Diagnostics</h2>
+      </div>
       <dl>
         <dt>Signaling</dt><dd id="dSignaling">idle</dd>
+        <dt id="dViewersLabel" hidden>Connected viewers</dt><dd id="dViewers" hidden>0</dd>
+        <dt id="dPeerLabel" hidden>Diagnostics for</dt><dd id="dPeer" hidden><div class="select-field peer-field"><select id="peerSelect"></select></div></dd>
         <dt>ICE connection state</dt><dd id="dIce">new</dd>
         <dt>Peer connection state</dt><dd id="dPc">&ndash;</dd>
         <dt>AV1 support (this browser)</dt><dd id="dSupport">&ndash;</dd>
@@ -45,13 +107,19 @@
         <dt>Resolution</dt><dd id="dRes">&ndash;</dd>
         <dt>Frame rate</dt><dd id="dFps">&ndash;</dd>
         <dt>Bitrate</dt><dd id="dBitrate">&ndash;</dd>
+        <dt id="dQualityLabel" hidden>Quality preset</dt><dd id="dQuality" hidden>&ndash;</dd>
+        <dt>Audio codec (actual)</dt><dd id="dAudioCodec">&ndash;</dd>
+        <dt>Audio bitrate</dt><dd id="dAudioBitrate">&ndash;</dd>
         <dt>Codec implementation</dt><dd id="dImpl">&ndash;</dd>
         <dt>Gathered candidates</dt><dd id="dCands">&ndash;</dd>
       </dl>
     </section>
 
     <section class="panel">
-      <h2>Log</h2>
+      <div class="panel-header">
+        <h2>Log</h2>
+        <button id="clearLogBtn" class="btn-ghost" title="Clear log">Clear</button>
+      </div>
       <pre id="log"></pre>
     </section>
   </main>
