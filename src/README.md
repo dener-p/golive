@@ -127,10 +127,15 @@ Before starting, the streamer chooses:
   is annotated from the candidates that were gathered (see `failureHints()`): a
   connection with only local/mDNS candidates points at a same-network problem
   (router client isolation or a Public-network firewall), while no srflx at all
-  points at blocked UDP/STUN. While a connection is `disconnected` or `failed`,
-  the diagnostics panel offers a **Reconnect** button: the streamer forces an ICE
-  restart past the automatic cap, and a viewer re-opens signaling to receive a
-  fresh offer that rebuilds the connection.
+  points at blocked UDP/STUN. A **viewer** cannot restart ICE itself (it does not
+  send offers), so when its path stalls it recovers on its own: on
+  `failed`/`disconnected` it asks the streamer (a `renegotiate` relay) to rebuild
+  the connection with a fresh offer, up to 5 times, falling back to a full
+  signaling reconnect in which the server assigns a new peer id. Without this a
+  stalled viewer stayed frozen until the host restarted the transmission. While a
+  connection is `disconnected` or `failed`, the diagnostics panel also offers a
+  **Reconnect** button: the streamer forces an ICE restart past the automatic
+  cap, and a viewer immediately re-opens signaling for a brand-new connection.
 - **Audio** comes from the display stream (`getDisplayMedia({ audio: true })`)
   on its own transceiver using Opus. The offer's Opus `fmtp` is edited
   (`preferOpus()`) to raise `maxaveragebitrate` to 128 kbps, request stereo and

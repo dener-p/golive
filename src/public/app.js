@@ -568,6 +568,12 @@ async function handleSignal(msg) {
     case "candidate":
       await handleRemoteCandidate(ROLE === "viewer" ? VIEWER_KEY : msg.from, msg.payload);
       break;
+    case "renegotiate":
+      // A viewer whose path stalled asked to be rebuilt from scratch. Rebuild
+      // its peer connection and send a fresh offer (same peer id).
+      log(t("log.renegotiateRequested", { id: msg.from }));
+      if (localStream) await startOffer(msg.from);
+      break;
     case "error": {
       const message = msg.code === "room-in-use" ? t("alert.roomInUse")
         : msg.code === "room-full" ? t("alert.roomFull")
@@ -742,6 +748,16 @@ function onIceState(peerId) {
       cancelIceRestart(conn);
       conn.iceRestarts = 0;
     }
+  } else {
+    // A viewer cannot restart ICE (it does not send offers), so it asks the
+    // streamer for a fresh one. "disconnected" is often transient, so wait
+    // longer than for "failed"; a recovery cancels and resets any retry.
+    if (s === "disconnected") scheduleViewerRecovery(6000);
+    else if (s === "failed") scheduleViewerRecovery(2500);
+    else if (s === "connected" || s === "completed") {
+      cancelViewerRecovery();
+      viewerRecoveries = 0;
+    }
   }
 
   if (peerId !== focusedId) return;
@@ -796,6 +812,58 @@ async function manualReconnect() {
     return;
   }
   log(t("log.manualReconnectViewer"), "warn");
+  viewerRecoveries = 0;
+  await viewerReconnectSocket();
+}
+
+// Viewer-side automatic recovery. A viewer never sends offers, so it cannot
+// repair its own path; when ICE dies it asks the streamer to rebuild the
+// connection with a fresh offer. Without this a stalled viewer stays frozen
+// until the host restarts the transmission.
+const MAX_VIEWER_RECOVERIES = 5;
+let viewerRecoveryTimer = null;
+let viewerRecoveries = 0;
+
+function cancelViewerRecovery() {
+  if (viewerRecoveryTimer) {
+    clearTimeout(viewerRecoveryTimer);
+    viewerRecoveryTimer = null;
+  }
+}
+
+function scheduleViewerRecovery(delay) {
+  if (ROLE !== "viewer" || viewerRecoveryTimer) return;
+  if (viewerRecoveries >= MAX_VIEWER_RECOVERIES) {
+    log(t("log.viewerRecoveryGaveUp"), "bad");
+    return;
+  }
+  viewerRecoveryTimer = setTimeout(() => {
+    viewerRecoveryTimer = null;
+    const conn = conns.get(VIEWER_KEY);
+    const state = conn && conn.pc ? conn.pc.iceConnectionState : "";
+    if (state !== "failed" && state !== "disconnected") return; // recovered on its own
+    viewerRecoveries++;
+    log(t("log.viewerRecovering", { attempt: viewerRecoveries, max: MAX_VIEWER_RECOVERIES }), "warn");
+    requestRenegotiate();
+  }, delay);
+}
+
+// Drop our half of the connection and ask for a new offer, so the streamer
+// rebuilds it — the same effect as restarting the transmission, but for one
+// viewer and without disturbing the room.
+function requestRenegotiate() {
+  closeConn(VIEWER_KEY);
+  showWaiting();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    signal(makeSignal("renegotiate"));
+  } else {
+    viewerReconnectSocket();
+  }
+}
+
+// Last resort: re-open signaling so the server hands us a new peer id and the
+// streamer offers a brand-new connection.
+async function viewerReconnectSocket() {
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   stopReconnecting();
   closeAllConns();
@@ -915,6 +983,10 @@ function preferOpus(sdp) {
 
 // Streamer: create and send an offer for one viewer.
 async function startOffer(peerId) {
+  if (!localStream) {
+    log(t("log.offerSkippedNoStream"), "warn");
+    return;
+  }
   const conn = createPc(peerId);
   const track = localStream.getVideoTracks()[0];
   const tr = conn.pc.addTransceiver(track, { direction: "sendonly", streams: [localStream] });

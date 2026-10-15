@@ -235,6 +235,13 @@ export class Room {
         if (role === "streamer") this.relayToViewer(msg.to, { type: "candidate", payload: msg.payload });
         else this.relayToStreamer({ type: "candidate", from: this.attachment(ws)?.peerId, payload: msg.payload });
         break;
+      case "renegotiate":
+        // A viewer cannot restart ICE on its own, so when its path stalls it
+        // asks the streamer to rebuild the connection with a fresh offer. This
+        // keeps the same peer id, so it recovers without restarting the stream.
+        if (role !== "viewer") return;
+        this.relayToStreamer({ type: "renegotiate", from: this.attachment(ws)?.peerId });
+        break;
       default:
         this.send(ws, { type: "error", code: "unknown-type", message: "Unknown message type" });
     }
