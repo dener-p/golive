@@ -76,7 +76,8 @@ Before starting, the streamer chooses:
 - **Prefer AV1** - prioritize `video/AV1`; compare against the browser default
   when unticked.
 - **Share audio** - include captured tab/system audio (best effort, see below).
-- **Quality** - a sender preset: 4K/60fps (40 Mbps), 4K/30fps (25 Mbps),
+- **Quality** - a sender preset: Native (screen resolution, 30 Mbps), 4K/60fps
+  (40 Mbps), 4K/30fps (25 Mbps),
   1440p/60fps (20 Mbps), 1080p/60fps (12 Mbps), 1080p/30fps (8 Mbps),
   Text/sharp (15 fps, 8 Mbps), 720p/30fps (4 Mbps), Data saver (1 Mbps) or Auto.
   Each sets a bitrate ceiling,
@@ -86,13 +87,17 @@ Before starting, the streamer chooses:
   ultrawide or portrait screen is scaled by its larger ratio so it does not
   overshoot the target and its bitrate budget), and the high-resolution presets
   prefer sharpness (`maintain-resolution`) since screen content is mostly static.
-  The
+  **Native** opts out of that scaling instead: it encodes at the captured size
+  (`scaleResolutionDownBy: 1`), so nothing is fractionally resampled — a
+  non-integer scale (e.g. 1440p into 1080p = 1.33x) is what softens text. The
   achieved bitrate can be lower than the ceiling. **Text/sharp** spends its bits
   on detail instead of frames, so documents and code stay crisp when the content
-  barely moves. Each preset also sets the track's `contentHint` (`"detail"` for
-  the screen presets, `"motion"` for **Data saver**, which already prefers
-  framerate). The chosen preset, **Prefer AV1** and **Share audio** are
-  remembered in `localStorage` for the next visit.
+  barely moves. Each preset also sets the track's `contentHint`: `"text"` for the
+  screen presets (sharp edges and flat colour), applied through
+  `applyContentHint()`, which reads the value back and falls back to `"detail"`
+  when a browser does not implement `"text"`; **Data saver** uses `"motion"` since
+  it already prefers framerate. The chosen preset, **Prefer AV1** and **Share
+  audio** are remembered in `localStorage` for the next visit.
 
 ## Design notes
 

@@ -267,10 +267,24 @@ function applyCodecPreferences(transceiver, kind) {
 // fallback when the captured size is unknown. Screen content is mostly static,
 // so the presets prefer keeping resolution sharp over keeping every frame.
 const QUALITY_PRESETS = {
+  // Encode at whatever the screen actually is, with no fractional downscale
+  // (which blurs text) and a ceiling high enough to keep it sharp. The cost
+  // scales with the monitor, so it suits a LAN or a fast link.
+  native: {
+    labelKey: "preset.native",
+    shortKey: "preset.native.short",
+    contentHint: "text",
+    maxBitrate: 30_000_000,
+    maxFramerate: 60,
+    captureFps: 60,
+    targetHeight: null, // null keeps the captured size (scale stays 1)
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
   "4k60": {
     labelKey: "preset.4k60",
     shortKey: "preset.4k60.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 40_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -281,7 +295,7 @@ const QUALITY_PRESETS = {
   "4k30": {
     labelKey: "preset.4k30",
     shortKey: "preset.4k30.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 25_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -292,7 +306,7 @@ const QUALITY_PRESETS = {
   "1440p60": {
     labelKey: "preset.1440p60",
     shortKey: "preset.1440p60.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 20_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -303,7 +317,7 @@ const QUALITY_PRESETS = {
   "1080p60": {
     labelKey: "preset.1080p60",
     shortKey: "preset.1080p60.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 12_000_000,
     maxFramerate: 60,
     captureFps: 60,
@@ -314,7 +328,7 @@ const QUALITY_PRESETS = {
   "1080p30": {
     labelKey: "preset.1080p30",
     shortKey: "preset.1080p30.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 8_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -328,7 +342,7 @@ const QUALITY_PRESETS = {
   text: {
     labelKey: "preset.text",
     shortKey: "preset.text.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 8_000_000,
     maxFramerate: 15,
     captureFps: 15,
@@ -339,7 +353,7 @@ const QUALITY_PRESETS = {
   "720p30": {
     labelKey: "preset.720p30",
     shortKey: "preset.720p30.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: 4_000_000,
     maxFramerate: 30,
     captureFps: 30,
@@ -363,7 +377,7 @@ const QUALITY_PRESETS = {
   auto: {
     labelKey: "preset.auto",
     shortKey: "preset.auto.short",
-    contentHint: "detail",
+    contentHint: "text",
     maxBitrate: null,
     maxFramerate: null,
     captureFps: 60,
@@ -381,6 +395,19 @@ function currentPresetKey() {
 function presetLabel(key = currentPresetKey()) {
   const p = QUALITY_PRESETS[key] || QUALITY_PRESETS["1080p60"];
   return t(p.labelKey);
+}
+
+// Screen share benefits from the "text" hint (sharp edges and flat, solid
+// areas), but a browser is allowed to ignore a value it does not implement and
+// keep the previous one. Set it, read it back, and fall back to "detail"
+// (presentations/pages) when the hint does not take.
+function applyContentHint(track, hint) {
+  if (!track || !("contentHint" in track)) return;
+  const wanted = hint || "detail";
+  try {
+    track.contentHint = wanted;
+    if (track.contentHint !== wanted) track.contentHint = "detail";
+  } catch { /* hint unsupported */ }
 }
 
 // Encoded resolution follows the preset's target instead of a fixed factor, so
@@ -1424,10 +1451,10 @@ async function startSharing() {
   log(t("log.qualityPreset", { label: presetLabel() }));
   const videoTrack = localStream.getVideoTracks()[0];
   // Hint the encoder what this content is (from the preset): screen content is
-  // mostly static text/UI, which "detail" keeps sharp, while the bandwidth-tight
-  // presets trade sharpness for smoothness with "motion". Browsers that don't
-  // support the hint ignore it.
-  try { videoTrack.contentHint = preset.contentHint || "detail"; } catch { /* hint unsupported */ }
+  // mostly static text/UI, which "text" keeps sharp (falling back to "detail"),
+  // while the bandwidth-tight presets trade sharpness for smoothness with
+  // "motion". Browsers that don't support a hint ignore it.
+  applyContentHint(videoTrack, preset.contentHint);
   const video = $("video");
   video.srcObject = localStream;
   video.muted = true;
@@ -1548,7 +1575,7 @@ function init() {
           await vTrack.applyConstraints({ frameRate: preset.captureFps });
         } catch { /* ignore constraint errors if browser can't re-constrain */ }
       }
-      if (vTrack) { try { vTrack.contentHint = preset.contentHint || "detail"; } catch { /* hint unsupported */ } }
+      if (vTrack) applyContentHint(vTrack, preset.contentHint);
     }
     if (conns.size) {
       log(t("log.qualityChanged", { label: presetLabel() }));

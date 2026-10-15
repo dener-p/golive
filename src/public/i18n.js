@@ -147,6 +147,8 @@
       "limit.other": "outro",
 
       // Quality presets
+      "preset.native": "Nativo · na resolução da tela · até 30 Mbps",
+      "preset.native.short": "Nativo (tela)",
       "preset.4k60": "4K · 60 fps · até 40 Mbps",
       "preset.4k60.short": "4K / 60 fps",
       "preset.4k30": "4K · 30 fps · até 25 Mbps",
@@ -360,6 +362,8 @@
       "limit.bandwidth": "bandwidth",
       "limit.other": "other",
 
+      "preset.native": "Native · screen resolution · up to 30 Mbps",
+      "preset.native.short": "Native (screen)",
       "preset.4k60": "4K · 60 fps · up to 40 Mbps",
       "preset.4k60.short": "4K / 60 fps",
       "preset.4k30": "4K · 30 fps · up to 25 Mbps",
