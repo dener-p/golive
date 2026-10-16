@@ -57,6 +57,22 @@ const SIGNAL_STABLE_MS = 10000;
 let signalingRoom = null;
 let signalingRole = null;
 
+// A per-tab participant token, sent with the signaling socket. The room uses it
+// to recognize the same participant reconnecting and replace its own stale
+// socket instead of refusing the connection as "room in use" / "room full" —
+// which used to strand a live room until the host picked a new room ID.
+const SIGNAL_TOKEN = (() => {
+  const key = "golive.signalToken";
+  const fresh = () => Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+  try {
+    let v = sessionStorage.getItem(key);
+    if (!v) { v = fresh(); sessionStorage.setItem(key, v); }
+    return v;
+  } catch {
+    return fresh();
+  }
+})();
+
 const STAT_FIELDS = [
   "dPair", "dPath", "dIpv6", "dRtt", "dLoss", "dJitter", "dFreeze",
   "dCodec", "dRes", "dFps", "dLimit", "dBitrate", "dUpload",
@@ -481,7 +497,7 @@ async function applyQualityToAllSenders(key = currentPresetKey()) {
 
 function wsUrl(room, role) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const q = new URLSearchParams({ room, role });
+  const q = new URLSearchParams({ room, role, token: SIGNAL_TOKEN });
   return `${proto}://${location.host}/ws?${q.toString()}`;
 }
 
@@ -509,14 +525,17 @@ function connectSignaling(room, role) {
       setField("dSignaling", t("signal.error"), "bad");
       if (!settled) { settled = true; reject(new Error(t("log.signalUnreachable"))); }
     };
-    sock.onclose = () => {
+    sock.onclose = (ev) => {
       if (ws !== sock) return;
       ws = null;
       if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
       setField("dSignaling", t("signal.closed"), "warn");
+      const code = ev && ev.code ? ev.code : 0;
+      log(t("log.signalClosed", { code }).trim(), "warn");
       if (isLive()) scheduleReconnect();
     };
     sock.onmessage = (ev) => {
+      if (ws !== sock) return; // a stale socket must not drive state
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       handleSignal(msg).catch((e) => log(t("log.signalHandleError", { message: e.message }), "bad"));
@@ -593,9 +612,12 @@ function flushLocalCandidates(peerId, conn) {
 async function handleSignal(msg) {
   switch (msg.type) {
     case "created":
-      closeAllConns(); // drop any stale peers from a previous connection
+      // A reconnect keeps whichever peer connections are still healthy: the room
+      // re-announces every viewer (peer-joined) and the sweep drops the rest.
+      // Tearing them all down here interrupted every viewer on a signaling blip.
       showRoomLink();
       log(t("log.roomLive", { room: roomId }));
+      if (conns.size) beginConnSweep();
       break;
     case "joined":
       closeAllConns(); // fresh peer id after a reconnect
@@ -605,19 +627,30 @@ async function handleSignal(msg) {
     case "streamer-waiting":
       showWaiting();
       break;
-    case "peer-joined":
+    case "peer-joined": {
       log(t("log.viewerJoined", { id: msg.peerId }));
       clearAlert();
-      await startOffer(msg.peerId);
+      const existing = conns.get(msg.peerId);
+      // Still with us after a reconnect: keep its working connection (no
+      // renegotiation) and just mark it confirmed for the sweep.
+      if (existing) existing.confirmed = true;
+      else await startOffer(msg.peerId);
       break;
+    }
     case "peer-left":
       log(t("log.viewerLeft", { id: msg.peerId }), "warn");
       closeConn(msg.peerId);
       break;
     case "streamer-left":
+      // The streamer's signaling socket dropped; it may be reconnecting. Hold the
+      // connection and keep playing, and only tear down if it does not return.
       log(t("log.streamerLeft"), "warn");
-      closeAllConns();
-      showWaiting();
+      beginStreamerGrace();
+      break;
+    case "streamer-back":
+      // The streamer is connected again; settle without disturbing the media.
+      cancelStreamerGrace();
+      clearAlert();
       break;
     case "offer":
       await handleOffer(msg.payload);
@@ -637,10 +670,11 @@ async function handleSignal(msg) {
     case "error": {
       const message = msg.code === "room-in-use" ? t("alert.roomInUse")
         : msg.code === "room-full" ? t("alert.roomFull")
+        : msg.code === "room-taken" ? t("alert.roomTaken")
         : msg.message;
       log(t("log.serverError", { message }), "bad");
       showAlert(message, "bad");
-      if (msg.code === "room-in-use" || msg.code === "room-full") {
+      if (msg.code === "room-in-use" || msg.code === "room-full" || msg.code === "room-taken") {
         if (ROLE === "streamer" && localStream) stopSharing();
         else { stopReconnecting(); if (ws) ws.close(); }
       }
@@ -671,6 +705,7 @@ function createPc(peerId) {
     candBuffer: [],
     candTimer: null,
     candEnd: false,
+    confirmed: true, // see beginConnSweep
   };
   conns.set(peerId, conn);
   if (!focusedId) setFocused(peerId);
@@ -760,6 +795,46 @@ function closeConn(peerId) {
 
 function closeAllConns() {
   for (const peerId of [...conns.keys()]) closeConn(peerId);
+}
+
+// The streamer's signaling socket can drop and come back (idle timeout, network
+// blip). Viewers used to tear down immediately on "streamer-left", which killed
+// the video for everyone; instead they hold the connection and keep playing, and
+// only give up if the streamer does not return within the grace period.
+const STREAMER_GRACE_MS = 10000;
+let streamerGraceTimer = null;
+
+function beginStreamerGrace() {
+  if (streamerGraceTimer) return;
+  showAlert(t("alert.streamerReconnecting"), "warn");
+  streamerGraceTimer = setTimeout(() => {
+    streamerGraceTimer = null;
+    clearAlert();
+    closeAllConns();
+    showWaiting();
+  }, STREAMER_GRACE_MS);
+}
+
+function cancelStreamerGrace() {
+  if (streamerGraceTimer) {
+    clearTimeout(streamerGraceTimer);
+    streamerGraceTimer = null;
+  }
+}
+
+// After the streamer reconnects, the room re-announces each viewer. Connections
+// that are still healthy are kept as-is; a viewer that is not re-announced left
+// while we were away, so it is dropped shortly after.
+const CONN_SWEEP_MS = 3000;
+let connSweepTimer = null;
+
+function beginConnSweep() {
+  if (connSweepTimer) clearTimeout(connSweepTimer);
+  for (const conn of conns.values()) conn.confirmed = false;
+  connSweepTimer = setTimeout(() => {
+    connSweepTimer = null;
+    for (const [peerId, conn] of [...conns]) if (!conn.confirmed) closeConn(peerId);
+  }, CONN_SWEEP_MS);
 }
 
 function updateViewerCount() {
@@ -901,12 +976,14 @@ function cancelViewerRecovery() {
 
 function scheduleViewerRecovery(delay) {
   if (ROLE !== "viewer" || viewerRecoveryTimer) return;
+  if (streamerGraceTimer) return; // the streamer is expected back; wait for it
   if (viewerRecoveries >= MAX_VIEWER_RECOVERIES) {
     log(t("log.viewerRecoveryGaveUp"), "bad");
     return;
   }
   viewerRecoveryTimer = setTimeout(() => {
     viewerRecoveryTimer = null;
+    if (streamerGraceTimer) return; // the streamer is expected back
     const conn = conns.get(VIEWER_KEY);
     const state = conn && conn.pc ? conn.pc.iceConnectionState : "";
     if (state !== "failed" && state !== "disconnected") return; // recovered on its own
@@ -932,7 +1009,8 @@ function requestRenegotiate() {
 // Last resort: re-open signaling so the server hands us a new peer id and the
 // streamer offers a brand-new connection.
 async function viewerReconnectSocket() {
-  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  cancelStreamerGrace();
+  if (ws) { ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null; ws.close(); ws = null; }
   stopReconnecting();
   closeAllConns();
   showWaiting();
@@ -1537,7 +1615,7 @@ function stopSharing() {
   }
   stopReconnecting();
   if (ws) {
-    ws.onclose = null;
+    ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null;
     ws.close();
     ws = null;
   }

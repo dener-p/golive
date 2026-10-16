@@ -160,6 +160,19 @@ Before starting, the streamer chooses:
   backing off rather than reconnecting every second — which matters because each
   retry re-runs a full offer plus candidate exchange, and every WebSocket message
   is a Durable Object request.
+- **Reconnects reclaim the seat**: each tab carries a per-tab `SIGNAL_TOKEN`
+  (kept in `sessionStorage`) on the socket URL. When the same participant
+  reconnects, the room replaces its own stale socket instead of refusing the
+  connection as *room in use* / *room full*. Cloudflare can briefly keep
+  returning a closed socket from `getWebSockets()`, which previously left a live
+  room permanently occupied until the host picked a new room ID; a genuinely
+  different host is still turned away.
+- **A signaling blip does not interrupt the video**: on the streamer's reconnect
+  the room does not announce *streamer-left* for its own viewers, the streamer
+  keeps the peer connections that are still healthy (`beginConnSweep`) and only
+  drops viewers that left, and a viewer holds its connection through a short
+  grace period (`STREAMER_GRACE_MS`) rather than tearing down. Only the
+  signaling socket blinks, not the media.
 - **Signaling efficiency**: a connection's ICE candidates are coalesced and sent
   as one message per ~100ms window (`queueLocalCandidate`/`CANDIDATE_FLUSH_MS`)
   instead of one message per candidate, cutting the dominant source of Durable

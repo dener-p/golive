@@ -124,6 +124,7 @@
       "signal.connected": "conectado",
       "signal.error": "erro",
       "signal.closed": "fechado",
+      "log.signalClosed": "Sinalização fechada (código {code})",
       "signal.idle": "inativo",
 
       // Media description
@@ -237,6 +238,8 @@
       "alert.captureDenied": "A captura de tela foi cancelada ou negada.",
       "alert.captureInsecure": "A captura de tela exige um contexto seguro (HTTPS ou localhost).",
       "alert.roomInUse": "Esse ID de sala já está em uso. Escolha outro.",
+      "alert.streamerReconnecting": "A conexão de quem transmite caiu. Tentando reconectar…",
+      "alert.roomTaken": "Esta sala foi assumida por outra sessão.",
       "alert.roomFull": "A sala está cheia. Tente novamente mais tarde.",
       "hint.iceLan": "Se vocês dois estão na mesma rede Wi-Fi, isolação de clientes no roteador ou o firewall do sistema (Windows em rede “Pública”) costuma ser a causa dessas falhas locais — tire um dos lados do Wi-Fi (rede móvel) para confirmar.",
       "hint.iceNoStun": "O STUN não retornou um endereço público; um firewall ou VPN pode estar bloqueando UDP/STUN.",
@@ -342,6 +345,7 @@
       "signal.connected": "connected",
       "signal.error": "error",
       "signal.closed": "closed",
+      "log.signalClosed": "Signaling closed (code {code})",
       "signal.idle": "idle",
 
       "media.videoAudio": "video + audio",
@@ -450,6 +454,8 @@
       "alert.captureDenied": "Screen capture was cancelled or denied.",
       "alert.captureInsecure": "Screen capture requires a secure context (HTTPS or localhost).",
       "alert.roomInUse": "That room ID is already live. Pick another one.",
+      "alert.streamerReconnecting": "The streamer's connection dropped. Reconnecting…",
+      "alert.roomTaken": "This room was taken over by another session.",
       "alert.roomFull": "The room is full. Try again later.",
       "hint.iceLan": "If you're both on the same Wi-Fi, router client isolation or the OS firewall (Windows set to a Public network) is the usual cause of this kind of local failure — take one side off Wi-Fi (mobile data) to confirm.",
       "hint.iceNoStun": "STUN didn't return a public address; a firewall or VPN may be blocking UDP/STUN.",

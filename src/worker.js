@@ -10,6 +10,7 @@
 
 const ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
 const MAX_MSG_BYTES = 64 * 1024;
+const WS_OPEN = 1; // WebSocket.OPEN
 const NO_STORE = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
@@ -140,11 +141,40 @@ export class Room {
     return a ? a.role : null;
   }
 
-  // Accepted sockets with a role, optionally excluding one socket.
+  // Accepted, still-open sockets with a role, optionally excluding one socket.
+  // getWebSockets() can briefly keep returning a socket after it closed, so
+  // closed sockets are filtered out; otherwise a stale one blocks a reconnect as
+  // "room in use" / "room full".
   socketsWithRole(role, exclude) {
     return this.ctx
       .getWebSockets()
-      .filter((ws) => ws !== exclude && this.roleOf(ws) === role);
+      .filter((ws) => ws !== exclude && ws.readyState === WS_OPEN && this.roleOf(ws) === role);
+  }
+
+  // Replace a socket that is being reconnected over. The old client is told it
+  // was replaced, so a still-live duplicate (a duplicated tab) stops instead of
+  // reconnecting and fighting over the seat; a client that already reconnected
+  // ignores the message on its now-dead socket. `quiet` suppresses the departure
+  // notice for the streamer, whose viewers keep their connections across the
+  // reconnect.
+  replaceSocket(ws, quiet) {
+    if (quiet) {
+      const a = this.attachment(ws);
+      if (a) {
+        a.gone = true;
+        try {
+          ws.serializeAttachment(a);
+        } catch {
+          /* socket already closed */
+        }
+      }
+    }
+    this.send(ws, { type: "error", code: "room-taken", message: "This room was taken over by another session." });
+    try {
+      ws.close(4000, "replaced by reconnect");
+    } catch {
+      /* socket already closed */
+    }
   }
 
   send(ws, obj) {
@@ -163,6 +193,7 @@ export class Room {
     const url = new URL(request.url);
     const role = url.searchParams.get("role") === "streamer" ? "streamer" : "viewer";
     const room = (url.searchParams.get("room") || "").toLowerCase();
+    const token = url.searchParams.get("token") || "";
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -177,23 +208,43 @@ export class Room {
     };
 
     if (role === "streamer") {
-      if (this.socketsWithRole("streamer").length > 0) {
+      const others = this.socketsWithRole("streamer");
+      // The same host reconnecting (same token) reclaims its room by replacing
+      // its own stale socket; a different host is still turned away so two
+      // people cannot share a room ID.
+      const conflicts = token
+        ? others.filter((ws) => (this.attachment(ws)?.token || "") !== token)
+        : others;
+      if (conflicts.length) {
         return reject("room-in-use", "That room ID is already live. Pick another one.", "room-in-use");
       }
-    } else if (this.socketsWithRole("viewer").length >= this.maxViewers) {
-      return reject("room-full", `Room is full (${this.maxViewers} viewers).`, "room-full");
+      for (const old of others) this.replaceSocket(old, true);
+    } else {
+      // A viewer reconnecting (same token) frees its own old slot instead of
+      // taking another one, so reconnects cannot fill the room with ghosts.
+      if (token) {
+        for (const old of this.socketsWithRole("viewer")) {
+          if ((this.attachment(old)?.token || "") === token) this.replaceSocket(old, false);
+        }
+      }
+      if (this.socketsWithRole("viewer").length >= this.maxViewers) {
+        return reject("room-full", `Room is full (${this.maxViewers} viewers).`, "room-full");
+      }
     }
 
     // Registration happens on connect: no create/join handshake.
     const peerId = role === "viewer" ? newPeerId() : null;
-    server.serializeAttachment({ role, peerId });
+    server.serializeAttachment({ role, peerId, token });
     this.ctx.acceptWebSocket(server, [role]);
 
     if (role === "streamer") {
       this.send(server, { type: "created", room });
-      // Offer to any viewers already waiting in the room.
+      // Tell viewers already in the room the streamer is here, so one holding on
+      // through a signaling blip can settle instead of timing out its grace
+      // period, and offer to each of them.
       for (const viewer of this.socketsWithRole("viewer", server)) {
         const pid = this.attachment(viewer)?.peerId;
+        this.send(viewer, { type: "streamer-back" });
         if (pid) this.send(server, { type: "peer-joined", peerId: pid });
       }
     } else {
