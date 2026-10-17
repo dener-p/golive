@@ -1671,6 +1671,95 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && isLive() && !wakeLock) requestWakeLock();
 });
 
+// ---------- Theater mode & keyboard shortcuts ----------
+
+// Theater hides the page chrome so the video fills the window; the choice is
+// remembered and Escape (outside fullscreen) leaves it. Single-key shortcuts
+// mirror the controls and are ignored while typing in a field or with a modal
+// open, so they never fight an input or the QR/report dialogs.
+const THEATER_KEY = "golive.theater";
+
+function theaterOn() {
+  return document.body.classList.contains("theater");
+}
+
+function setTheater(on) {
+  document.body.classList.toggle("theater", on);
+  const btn = $("theaterBtn");
+  if (btn) {
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    const label = t(on ? "app.exitTheater" : "app.theater");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  }
+  try { localStorage.setItem(THEATER_KEY, on ? "1" : "0"); } catch { /* storage unavailable */ }
+}
+
+function toggleTheater() {
+  setTheater(!theaterOn());
+}
+
+function typingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable === true;
+}
+
+function anyModalOpen() {
+  return !!document.querySelector(".modal-backdrop:not([hidden])");
+}
+
+async function toggleFullscreen() {
+  const video = $("video");
+  const target = video && !video.hidden ? video : document.querySelector(".video-wrap");
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else if (target && target.requestFullscreen) await target.requestFullscreen();
+  } catch { /* not permitted */ }
+}
+
+async function togglePip() {
+  const video = $("video");
+  if (!video || typeof video.requestPictureInPicture !== "function" || !document.pictureInPictureEnabled) return;
+  try {
+    if (document.pictureInPictureElement) await document.exitPictureInPicture();
+    else await video.requestPictureInPicture();
+  } catch { /* not allowed until a video is playing */ }
+}
+
+// The streamer's preview is muted on purpose, so only viewers toggle sound.
+function toggleVideoMute() {
+  if (ROLE !== "viewer") return;
+  const video = $("video");
+  if (!video) return;
+  video.muted = !video.muted;
+  if (!video.muted && video.volume === 0) video.volume = 1;
+  syncVolumeUI();
+}
+
+function setupViewShortcuts() {
+  const btn = $("theaterBtn");
+  if (btn) btn.addEventListener("click", toggleTheater);
+
+  let remembered = false;
+  try { remembered = localStorage.getItem(THEATER_KEY) === "1"; } catch { /* storage unavailable */ }
+  setTheater(remembered);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (typingTarget(document.activeElement) || anyModalOpen()) return;
+    switch (e.key.toLowerCase()) {
+      case "t": e.preventDefault(); toggleTheater(); break;
+      case "f": e.preventDefault(); toggleFullscreen(); break;
+      case "p": if (ROLE === "viewer") { e.preventDefault(); togglePip(); } break;
+      case "m": e.preventDefault(); toggleVideoMute(); break;
+      case "escape":
+        if (theaterOn() && !document.fullscreenElement) setTheater(false);
+        break;
+    }
+  });
+}
+
 // ---------- Init ----------
 
 function init() {
@@ -1680,6 +1769,7 @@ function init() {
     subtitle.textContent = ROLE === "viewer" ? t("sub.viewer") : t("sub.host");
   }
   reportSupport();
+  setupViewShortcuts();
   // Start muted so autoplay is permitted; viewers opt into audio via the
   // video controls' speaker icon. The host preview always stays muted, while a
   // viewer's saved volume/mute is applied (unmuted is restored after playback).

@@ -201,6 +201,12 @@ Before starting, the streamer chooses:
 - **Wake lock**: while a stream is live (hosting or watching) the page holds a
   Screen Wake Lock so the device does not sleep mid-session, re-acquiring it when
   the tab becomes visible again.
+- **Theater mode and shortcuts**: the video carries a control that (like `T`)
+  hides the page chrome and lets the stream fill the window, with the alert,
+  "unmute" hint and volume bar floating over it; the choice is remembered and
+  `Esc` (outside fullscreen) leaves it. `F` toggles fullscreen, `P`
+  picture-in-picture and `M` mute (viewers only). Shortcuts are ignored while
+  typing in a field or with the QR/report dialog open.
 - Candidate logs show type and address family only; IP addresses are never
   displayed or stored. Anyone with the room link can join, so don't share
   private content.
