@@ -58,6 +58,13 @@ domain, delete the `routes` entry and deploy to `golive.<account>.workers.dev`.
    a toggle, and status messages and log lines are announced to screen readers
    (`aria-live`). Viewers can also pop the stream out into **picture-in-picture**
    where the browser supports it.
+4. **Squad** (`/squad`) watches several rooms at once: type a room code (or paste
+   a `/watch/…` link) and each room opens as a tile — the normal viewer page in
+   embed mode (`?embed=1`) inside an iframe, so signaling and media are unchanged
+   and each room is still one direct P2P connection. The list is kept in the URL
+   hash (`/squad#a,b,c`), so a whole squad is a single shareable link, and only
+   one tile plays sound at a time (its speaker button picks it). The tiles are
+   independent; the real cost is the viewer's CPU and bandwidth, not the server's.
 
 Shared links get a **link preview** (Open Graph/Twitter): the worker fills the
 meta tags per route, so `/watch/<id>` previews as “Golive — assistir à sala
@@ -226,16 +233,27 @@ Before starting, the streamer chooses:
   host then re-joins the same room as a viewer, so both keep watching the same
   link with no reload. Denials and unanswered requests (45s) release the
   captured tracks.
+- **Squad (multi-stream)**: `/squad` is a thin shell — each room is the ordinary
+  viewer page loaded with `?embed=1` in an iframe, so nothing in the signaling or
+  media path changes and it stays direct P2P (one connection per room, not a
+  mesh). The shell only owns the grid and the audio routing: it posts
+  `{type:"audio"}` messages into each tile, and each tile posts
+  `{type:"state", state:"live"|"waiting"}` back so the grid can badge it. An
+  inline head script adds the `embed` class before first paint and CSS hides the
+  chrome, so the video fills the tile without a flash; the tile keeps its own
+  reconnect, handoff and diagnostics logic untouched. The realistic limit (2–4
+  streams, more on a strong machine) is decode CPU and bandwidth on the viewer,
+  not the Durable Object.
 - Candidate logs show type and address family only; IP addresses are never
   displayed or stored. Anyone with the room link can join, so don't share
   private content.
-
 ## Files
 
 - `worker.js` - Worker routing + the `Room` Durable Object (signaling)
 - `wrangler.jsonc` - Cloudflare Worker, assets, DO and domain configuration
 - `public/index.html`, `public/app.js`, `public/style.css` - host/viewer app shell
 - `public/home.html` - landing page at `/` (Host or Watch)
+- `public/squad.html`, `public/squad.js` - multistream console at `/squad` (tiles + audio)
 - `public/i18n.js` - pt-BR / en translations (no build step)
 - `public/qr.js` - dependency-free QR encoder (room link as a scannable code)
 - `public/report.js` - shareable "Report a bug" flow (clipboard + Discord/GitHub)

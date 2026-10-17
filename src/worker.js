@@ -51,6 +51,12 @@ function ogFor(kind, room) {
       description: "Compartilhe sua tela, uma janela ou aba e envie o link da sala para os amigos.",
     };
   }
+  if (kind === "squad") {
+    return {
+      title: "Golive \u2014 multistream",
+      description: "Assista a v\u00e1rias salas do Golive ao mesmo tempo, lado a lado.",
+    };
+  }
   return {
     title: `Golive \u2014 assistir \u00e0 sala ${room}`,
     description: `Assista \u00e0 transmiss\u00e3o de tela da sala ${room}.`,
@@ -94,6 +100,10 @@ export default {
     // Host console. The client decides its role from the path; "/host" has no
     // room segment, so it is treated as a streamer.
     if (lower === "/host") return serveShell(env, url, "/index.html", ogFor("host"));
+
+    // Multistream console: several rooms side by side, each one an embedded
+    // viewer (/watch/<id>?embed=1) in its own iframe.
+    if (lower === "/squad") return serveShell(env, url, "/squad.html", ogFor("squad"));
 
     // Canonical viewer URL. Room IDs are lowercase; redirect a mixed-case path
     // to its canonical form.

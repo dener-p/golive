@@ -42,6 +42,11 @@ const match = location.pathname.match(/^\/watch\/([a-z0-9][a-z0-9_-]{2,23})$/);
 let roomFromUrl = match ? match[1] : null;
 let ROLE = roomFromUrl ? "viewer" : "streamer";
 
+// Embed mode (?embed=1): this page is one tile of the /squad console. The
+// chrome is hidden and the parent frame drives audio over postMessage, so the
+// tile itself stays a plain viewer with no controls of its own.
+const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+
 let ws = null;
 let localStream = null;
 let roomId = roomFromUrl;
@@ -128,6 +133,46 @@ function showAlert(msg, level = "warn") {
 
 function clearAlert() {
   $("alert").hidden = true;
+}
+
+// In embed mode, tell the parent frame (/squad) whether this tile carries a
+// live stream, so the console can badge it. Same-origin only.
+function postState(state) {
+  if (!EMBED || window.parent === window) return;
+  try {
+    window.parent.postMessage({ channel: "golive", type: "state", room: roomId, state }, location.origin);
+  } catch { /* parent gone */ }
+}
+
+// Wire the page up as a squad tile: no chrome of its own, audio driven by the
+// parent frame over postMessage. The class is normally already set by the
+// inline head script (to avoid a flash); this is a fallback and the JS side.
+function setupEmbed() {
+  document.documentElement.classList.add("embed");
+  const video = $("video");
+  video.controls = false;
+  // Report live/waiting from the element itself so the badge follows the real
+  // playback state, including buffering and the stream ending.
+  video.addEventListener("playing", () => postState("live"));
+  video.addEventListener("waiting", () => postState("waiting"));
+  video.addEventListener("emptied", () => postState("waiting"));
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin) return;
+    const d = e.data;
+    if (!d || d.channel !== "golive" || d.type !== "audio") return;
+    const v = $("video");
+    v.muted = !!d.muted;
+    if (typeof d.volume === "number") v.volume = Math.min(1, Math.max(0, d.volume));
+    if (!v.muted && v.volume === 0) v.volume = 1;
+    // A parent click is a user gesture, so resuming playback here is allowed.
+    if (!v.muted && v.paused) {
+      const p = v.play();
+      if (p && typeof p.catch === "function") p.catch(() => { });
+    }
+    syncVolumeUI();
+    checkAudioHint();
+  });
+  postState("waiting");
 }
 
 // Viewer volume/mute is remembered across reloads. Audio still starts muted so
@@ -794,13 +839,14 @@ function createPc(peerId) {
     video.srcObject = stream;
     // Start muted so autoplay is allowed; the viewer unmutes with the
     // video controls' speaker icon or the unmute banner. Once playback has
-    // actually started, restore the saved volume/mute.
-    const prefs = loadAudioPrefs();
+    // actually started, restore the saved volume/mute. An embedded tile never
+    // restores a saved state: the console decides whether it has sound.
+    const prefs = EMBED ? { volume: 1, muted: true } : loadAudioPrefs();
     applyAudioState(video, { volume: prefs.volume, muted: true });
     const playing = video.play();
     if (playing && typeof playing.then === "function") {
       playing
-        .then(() => { if (!prefs.muted) video.muted = false; checkAudioHint(); })
+        .then(() => { if (!EMBED && !prefs.muted) video.muted = false; checkAudioHint(); })
         .catch(() => { });
     }
     setVideoActive(true);
@@ -1586,6 +1632,7 @@ function showRoomLink() {
 // stays open, so playback starts automatically when the streamer arrives.
 function showWaiting() {
   if (ROLE !== "viewer") return;
+  postState("waiting");
   $("video").srcObject = null;
   setVideoActive(false, true);
   checkAudioHint();
@@ -2086,11 +2133,13 @@ function init() {
     subtitle.textContent = ROLE === "viewer" ? t("sub.viewer") : t("sub.host");
   }
   reportSupport();
-  setupViewShortcuts();
+  if (EMBED) setupEmbed();
+  else setupViewShortcuts();
   // Start muted so autoplay is permitted; viewers opt into audio via the
   // video controls' speaker icon. The host preview always stays muted, while a
   // viewer's saved volume/mute is applied (unmuted is restored after playback).
-  applyAudioState($("video"), ROLE === "streamer" ? { volume: 1, muted: true } : loadAudioPrefs());
+  // Embedded tiles also start muted and follow the console instead.
+  applyAudioState($("video"), ROLE === "streamer" || EMBED ? { volume: 1, muted: true } : loadAudioPrefs());
   syncVolumeUI();
   $("peerSelect").addEventListener("change", (e) => setFocused(e.target.value || null));
   $("reconnectBtn").addEventListener("click", manualReconnect);
@@ -2241,7 +2290,8 @@ function init() {
     const video = $("video");
     if (video.volume !== audioState.volume || video.muted !== audioState.muted) {
       audioState = { volume: video.volume, muted: video.muted };
-      saveAudioPrefs();
+      // An embedded tile's mute state is the console's, not a saved preference.
+      if (!EMBED) saveAudioPrefs();
     }
     if (!video.muted) {
       const hint = $("audioHint");
