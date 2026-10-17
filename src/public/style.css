@@ -1000,63 +1000,41 @@ a.report-link:hover {
   margin-top: 6px;
 }
 
-/* Theater mode: drop the chrome and let the video fill the window */
-body.theater main {
-  max-width: none;
-  padding: 0;
-}
-
-body.theater header,
-body.theater .controls,
-body.theater .link-row,
-body.theater .panel,
-body.theater .site-footer {
+/* Theater mode: drop the chrome so the rooms fill the window */
+body.theater .site-header,
+body.theater .add-bar,
+body.theater .site-footer,
+body.theater .shell-panel {
   display: none !important;
 }
 
-body.theater .video-wrap {
-  height: 100vh;
-  min-height: 100vh;
+body.theater main.workspace {
+  max-width: none;
+  padding: 0;
   margin: 0;
-  border: 0;
+}
+
+body.theater #grid {
+  min-height: 100vh;
+}
+
+/* Keep panel internals normal in theater (the old single-room rules below no
+   longer apply to a grid of rooms). */
+body.theater .room-panel .video-wrap {
+  height: auto;
+  min-height: 96px;
   border-radius: 0;
 }
 
-body.theater video {
-  height: 100vh;
-  object-fit: contain;
-}
-
-/* The alert, "unmute" hint and volume control float over the video instead of
-   stacking above it, so the stream can own the whole viewport. */
-body.theater .alert,
-body.theater .audio-hint,
-body.theater .volume-bar {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 6;
-  width: max-content;
-  max-width: min(560px, calc(100vw - 28px));
-  margin: 0;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-
-body.theater .alert,
-body.theater .audio-hint {
-  top: 14px;
-}
-
-/* The handoff prompt is also an alert; stack it below a live one. */
-body.theater #handoffPrompt {
-  top: 74px;
-}
-
-body.theater .volume-bar {
-  bottom: 18px;
+body.theater .room-panel .alert,
+body.theater .room-panel .audio-hint,
+body.theater .room-panel .volume-bar {
+  position: static;
+  transform: none;
   width: auto;
-  min-width: min(360px, calc(100vw - 28px));
-  background: rgba(20, 23, 32, 0.92);
+  max-width: none;
+  margin: 0 0 8px;
+  box-shadow: none;
 }
 
 /* ---------- Squad console (multistream) ---------- */
@@ -1349,5 +1327,293 @@ html.embed #handoffPrompt {
   margin: 10px 0 0;
   font-size: 12.5px;
   color: var(--bad);
+}
+
+/* ==========================================================================
+   Unified shell: one page, many rooms, free-form resizable panels.
+   ========================================================================== */
+
+.site-header {
+  max-width: none;
+  margin: 0;
+  padding: 14px 16px 10px;
+}
+
+.site-header .header-content {
+  max-width: none;
+}
+
+.brand {
+  text-decoration: none;
+  color: inherit;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+main.workspace {
+  max-width: none;
+  margin: 0;
+  padding: 0 16px 14px;
+}
+
+/* Add-room bar */
+.add-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 0 16px 12px;
+}
+
+.add-bar input {
+  flex: 1;
+  max-width: 420px;
+}
+
+/* The grid of columns; splitters sit between them as flex items. */
+#grid {
+  display: flex;
+  align-items: stretch;
+  min-height: 62vh;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.split {
+  position: relative;
+  flex: 0 0 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.split-h {
+  cursor: row-resize;
+}
+
+.split::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: var(--border);
+  border-radius: 3px;
+  transition: background 0.12s ease;
+}
+
+.split-v::after {
+  width: 3px;
+  height: 46%;
+}
+
+.split-h::after {
+  height: 3px;
+  width: 46%;
+}
+
+.split:hover::after,
+.split:active::after {
+  background: var(--accent);
+}
+
+/* Room panel */
+.room-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.room-panel.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.room-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.room-name {
+  font-weight: 700;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.room-badge.live {
+  color: #7ee0a4;
+  border-color: rgba(126, 224, 164, 0.4);
+}
+
+.room-badge.waiting {
+  color: var(--warn);
+  border-color: rgba(245, 165, 36, 0.4);
+}
+
+.room-bar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.audio-btn.on {
+  color: var(--accent);
+}
+
+.room-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow: auto;
+}
+
+/* Video owns the panel body. */
+.room-panel .video-wrap {
+  flex: 1 1 auto;
+  min-height: 110px;
+  margin: 0;
+}
+
+.room-panel video {
+  max-height: none;
+  height: 100%;
+  object-fit: contain;
+}
+
+.room-panel .volume-bar {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  margin: 0;
+  background: rgba(20, 23, 32, 0.86);
+  backdrop-filter: blur(6px);
+}
+
+/* Host controls live inside the panel. */
+.room-controls,
+.room-viewer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: flex-end;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.room-controls .controls-group,
+.room-viewer-controls .controls-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: flex-end;
+}
+
+.room-controls .select-field,
+.room-controls .text-field {
+  min-width: 0;
+}
+
+.room-controls .peer-field select {
+  max-width: 220px;
+}
+
+.room-alert,
+.room-handoff {
+  margin: 0;
+}
+
+.room-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.handoff-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 62vh;
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.diag-target {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-left: 10px;
+  flex: 1;
+}
+
+#log {
+  max-height: 220px;
+}
+
+@media (max-width: 720px) {
+  #grid {
+    flex-direction: column;
+  }
+
+  .split-v {
+    display: none;
+  }
+
+  .col {
+    flex: 0 0 auto !important;
+  }
+
+  .room-panel {
+    min-height: 46vh;
+  }
 }
 

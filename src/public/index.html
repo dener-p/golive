@@ -20,196 +20,90 @@
   <meta name="golive-version" content="__APP_VERSION__">
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="stylesheet" href="/style.css">
-  <script>if (new URLSearchParams(location.search).get("embed") === "1") document.documentElement.classList.add("embed");</script>
 </head>
 <body>
-  <header>
+  <header class="site-header">
     <div class="header-content">
-      <div class="header-titles">
+      <a class="brand" href="/">
         <h1>Golive</h1>
-        <p class="sub" id="subtitle"></p>
-      </div>
+      </a>
       <div class="header-actions">
+        <button id="addRoomBtn" class="btn-ghost" type="button" data-i18n-title="shell.addRoom" data-i18n-aria-label="shell.addRoom" title="Add a room" aria-label="Add a room">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <span data-i18n="shell.addRoom">Add room</span>
+        </button>
+        <button id="hostBtn" class="btn-ghost" type="button" data-i18n-title="shell.host" title="Start sharing your screen">
+          <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+          <span data-i18n="shell.host">Share your screen</span>
+        </button>
+        <button id="theaterBtn" class="btn-ghost" type="button" aria-pressed="false" data-i18n-title="app.theater" title="Theater mode">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
         <select id="langSelect" class="lang-select" data-lang-select data-i18n-aria-label="app.language" aria-label="Language"></select>
-        <span id="role" class="badge"></span>
       </div>
     </div>
   </header>
 
-  <main>
-    <section class="controls streamer-only" id="controlsBar">
-      <div class="controls-group streamer-actions streamer-only">
-        <button id="startBtn" class="primary">
-          <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
-          <span data-i18n="app.startSharing">Start sharing</span>
-        </button>
-        <button id="stopBtn" class="danger" disabled>
-          <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>
-          <span data-i18n="app.stop">Stop</span>
-        </button>
-      </div>
+  <div id="addBar" class="add-bar" hidden>
+    <input id="addRoomInput" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" maxlength="120" data-i18n-placeholder="shell.addPlaceholder" placeholder="Room code or link" data-i18n-aria-label="shell.addPlaceholder" aria-label="Room code or link">
+    <button id="addRoomConfirm" class="primary" type="button" data-i18n="shell.add">Add</button>
+    <button id="addRoomCancel" class="btn-ghost" type="button" data-i18n="app.cancel">Cancel</button>
+  </div>
 
-      <div class="controls-group streamer-options streamer-only">
-        <div class="text-field" id="wrapRoomId">
-          <label for="roomId" data-i18n="app.roomId">Room ID</label>
-          <input id="roomId" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" maxlength="24" placeholder="auto">
-          <button type="button" id="randomRoomBtn" data-i18n-title="app.randomRoom" title="Generate a random ID" data-i18n-aria-label="app.randomRoom" aria-label="Generate a random ID">
-            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
-          </button>
-        </div>
-        <div class="text-field pin-field" id="wrapRoomPin">
-          <label for="roomPin" data-i18n="app.roomPin">PIN</label>
-          <input id="roomPin" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="8" data-i18n-placeholder="app.roomPinPlaceholder" placeholder="no PIN" data-i18n-title="app.roomPinHint" title="Optional PIN" data-i18n-aria-label="app.roomPinHint" aria-label="Optional PIN">
-        </div>
-        <label class="check-pill" id="wrapPreferAv1">
-          <input type="checkbox" id="preferAv1" checked>
-          <span data-i18n="app.preferAv1">Prefer AV1</span>
-        </label>
-        <label class="check-pill" id="wrapShareAudio">
-          <input type="checkbox" id="shareAudio" checked>
-          <span data-i18n="app.shareAudio">Share audio</span>
-        </label>
-
-        <div class="select-field" id="wrapQuality">
-          <label for="quality" data-i18n="app.quality">Quality</label>
-          <select id="quality"></select>
-        </div>
-      </div>
-    </section>
-
-    <section class="controls viewer-controls" id="viewerControls" hidden>
-      <div class="controls-group">
-        <button id="pipBtn" class="btn-ghost" type="button" data-i18n-title="app.pip" title="Picture-in-picture">
-          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1"/></svg>
-          <span id="pipLabel" data-i18n="app.pip">Picture-in-picture</span>
-        </button>
-        <button id="takeStageBtn" class="btn-ghost" type="button" hidden data-i18n-title="handoff.takeStageHint" title="Ask the host to present your screen">
-          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="12" rx="2"/><path d="M12 12v7"></path><path d="m8 16 4-4 4 4"></path></svg>
-          <span data-i18n="handoff.takeStage">Take the stage</span>
-        </button>
-      </div>
-    </section>
-
-    <section id="linkRow" class="link-row" hidden>
-      <span class="link-label">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-        <span data-i18n="app.roomLink">Room link</span>
-      </span>
-      <input id="roomUrl" type="text" readonly spellcheck="false">
-      <button id="copyBtn">
-        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-        <span data-i18n="app.copyLink">Copy link</span>
-      </button>
-      <button id="shareBtn" hidden>
-        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><path d="m8.59 13.51 6.83 3.98M15.41 6.51 8.59 10.49"></path></svg>
-        <span data-i18n="link.share">Share</span>
-      </button>
-      <button id="qrBtn">
-        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><path d="M14 14h3v3h-3zM19 19h2v2h-2zM14 19h2v2h-2zM19 14h2v2h-2z"></path></svg>
-        <span data-i18n="link.qr">QR code</span>
-      </button>
-    </section>
-
-    <div id="alert" class="alert" role="alert" hidden></div>
-
-    <div id="handoffPrompt" class="alert warn" role="alertdialog" aria-labelledby="handoffText" hidden>
-      <span id="handoffText"></span>
-      <div class="handoff-actions">
-        <button id="handoffAccept" class="primary" type="button" data-i18n="handoff.accept">Let them present</button>
-        <button id="handoffDecline" class="btn-ghost" type="button" data-i18n="handoff.decline">Not now</button>
-      </div>
+  <main class="workspace">
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty-state" hidden>
+      <p data-i18n="shell.empty">No rooms yet. Add a room or share your screen.</p>
     </div>
-
-    <div id="audioHint" class="audio-hint" hidden>
-      <span data-i18n="app.audioHint">🔊 Stream audio available — starts muted by browser. Click to unmute.</span>
-      <button id="unmuteBtn" data-i18n="app.unmute">Unmute</button>
-    </div>
-
-    <section class="volume-bar" id="volumeBar" hidden>
-      <button id="volMuteBtn" class="btn-ghost" type="button" aria-pressed="false" data-i18n-title="app.volume" data-i18n-aria-label="app.volume" title="Volume" aria-label="Volume"></button>
-      <input id="volume" class="volume-slider" type="range" min="0" max="1" step="0.01" value="1" data-i18n-aria-label="app.volume" aria-label="Volume">
-      <span id="volumePct" class="volume-pct">100%</span>
-    </section>
-
-    <section class="video-wrap">
-      <button id="theaterBtn" class="overlay-btn" type="button" aria-pressed="false">
-        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-      </button>
-      <div id="videoPlaceholder" class="video-placeholder">
-        <div class="placeholder-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-            <line x1="8" y1="21" x2="16" y2="21"></line>
-            <line x1="12" y1="17" x2="12" y2="21"></line>
-          </svg>
-        </div>
-        <p id="placeholderText"></p>
-      </div>
-      <div id="pinGate" class="pin-gate" hidden>
-        <form id="pinForm" class="pin-form" autocomplete="off">
-          <h2 data-i18n="pin.title">This room needs a PIN</h2>
-          <p class="pin-hint" data-i18n="pin.hint">Ask the host for the PIN.</p>
-          <div class="pin-row">
-            <input id="pinInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" data-i18n-placeholder="pin.placeholder" placeholder="PIN" data-i18n-aria-label="pin.placeholder" aria-label="PIN">
-            <button class="primary" type="submit" data-i18n="pin.submit">Watch</button>
-          </div>
-          <p class="pin-error" id="pinError" hidden data-i18n="pin.wrong">Wrong PIN. Try again.</p>
-        </form>
-      </div>
-      <video id="video" autoplay playsinline controls hidden></video>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header">
-        <h2 data-i18n="app.diagnostics">Diagnostics</h2>
-        <div class="panel-actions">
-          <button id="copyDiagBtn" class="btn-ghost" type="button" data-i18n="diag.copy">Copy diagnostics</button>
-          <button class="btn-ghost" type="button" data-report-bug data-i18n="report.action">Report a bug</button>
-          <button id="reconnectBtn" class="btn-ghost" type="button" hidden data-i18n="diag.reconnect">Reconnect</button>
-        </div>
-      </div>
-      <dl>
-        <dt data-i18n="diag.signaling">Signaling</dt><dd id="dSignaling" data-i18n="signal.idle">idle</dd>
-        <dt id="dViewersLabel" hidden data-i18n="diag.viewers">Connected viewers</dt><dd id="dViewers" hidden>0</dd>
-        <dt id="dUploadLabel" hidden data-i18n="diag.upload">Total upload</dt><dd id="dUpload" hidden>&ndash;</dd>
-        <dt id="dPeerLabel" hidden data-i18n="diag.forViewer">Diagnostics for</dt><dd id="dPeer" hidden><div class="select-field peer-field"><select id="peerSelect"></select></div></dd>
-        <dt id="dPeerQualityLabel" hidden data-i18n="diag.peerQuality">Quality for this viewer</dt><dd id="dPeerQuality" hidden><div class="select-field peer-field"><select id="peerQualitySelect"></select></div></dd>
-        <dt data-i18n="diag.ice">ICE connection state</dt><dd id="dIce">new</dd>
-        <dt data-i18n="diag.pc">Peer connection state</dt><dd id="dPc">&ndash;</dd>
-        <dt data-i18n="diag.av1">AV1 support (this browser)</dt><dd id="dSupport">&ndash;</dd>
-        <dt data-i18n="diag.pair">Selected candidate pair</dt><dd id="dPair">&ndash;</dd>
-        <dt data-i18n="diag.path">Path</dt><dd id="dPath">&ndash;</dd>
-        <dt data-i18n="diag.ipv6">IPv6 candidate (reflexive)</dt><dd id="dIpv6">&ndash;</dd>
-        <dt data-i18n="diag.rtt">Round-trip time</dt><dd id="dRtt">&ndash;</dd>
-        <dt data-i18n="diag.loss">Packet loss</dt><dd id="dLoss">&ndash;</dd>
-        <dt data-i18n="diag.jitter">Jitter</dt><dd id="dJitter">&ndash;</dd>
-        <dt data-i18n="diag.freeze">Freezes</dt><dd id="dFreeze">&ndash;</dd>
-        <dt data-i18n="diag.videoCodec">Video codec (actual)</dt><dd id="dCodec">&ndash;</dd>
-        <dt data-i18n="diag.res">Resolution</dt><dd id="dRes">&ndash;</dd>
-        <dt data-i18n="diag.fps">Frame rate</dt><dd id="dFps">&ndash;</dd>
-        <dt data-i18n="diag.limit">Quality limit</dt><dd id="dLimit">&ndash;</dd>
-        <dt data-i18n="diag.bitrate">Bitrate</dt><dd id="dBitrate">&ndash;</dd>
-        <dt id="dQualityLabel" hidden data-i18n="diag.quality">Quality preset</dt><dd id="dQuality" hidden>&ndash;</dd>
-        <dt data-i18n="diag.audioCodec">Audio codec (actual)</dt><dd id="dAudioCodec">&ndash;</dd>
-        <dt data-i18n="diag.audioBitrate">Audio bitrate</dt><dd id="dAudioBitrate">&ndash;</dd>
-        <dt data-i18n="diag.impl">Codec implementation</dt><dd id="dImpl">&ndash;</dd>
-        <dt data-i18n="diag.cands">Gathered candidates</dt><dd id="dCands">&ndash;</dd>
-      </dl>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header">
-        <h2 data-i18n="app.log">Log</h2>
-        <div class="panel-actions">
-          <button id="logToggle" class="btn-ghost" type="button" aria-expanded="false" aria-controls="log" hidden>
-            <span data-i18n="log.show">Show log</span>
-          </button>
-          <button id="clearLogBtn" class="btn-ghost" data-i18n-title="app.clear" data-i18n="app.clear" title="Clear log">Clear</button>
-        </div>
-      </div>
-      <pre id="log" role="log" aria-live="polite" data-i18n-aria-label="app.log"></pre>
-    </section>
   </main>
+
+  <section class="panel shell-panel">
+    <div class="panel-header">
+      <h2 data-i18n="app.diagnostics">Diagnostics</h2>
+      <span id="diagTarget" class="diag-target"></span>
+      <div class="panel-actions">
+        <button id="copyDiagBtn" class="btn-ghost" type="button" data-i18n="diag.copy">Copy diagnostics</button>
+        <button id="clearLogBtn" class="btn-ghost" data-i18n-title="app.clear" data-i18n="app.clear" title="Clear log">Clear</button>
+      </div>
+    </div>
+    <dl id="diagList">
+      <dt data-i18n="diag.signaling">Signaling</dt><dd data-diag="dSignaling" data-i18n="signal.idle">idle</dd>
+      <dt data-streamer-only hidden data-i18n="diag.viewers">Connected viewers</dt><dd data-diag="dViewers" data-streamer-only hidden>0</dd>
+      <dt data-streamer-only hidden data-i18n="diag.upload">Total upload</dt><dd data-diag="dUpload" data-streamer-only hidden>&ndash;</dd>
+      <dt data-i18n="diag.ice">ICE connection state</dt><dd data-diag="dIce">new</dd>
+      <dt data-i18n="diag.pc">Peer connection state</dt><dd data-diag="dPc">&ndash;</dd>
+      <dt data-i18n="diag.av1">AV1 support (this browser)</dt><dd data-diag="dSupport">&ndash;</dd>
+      <dt data-i18n="diag.pair">Selected candidate pair</dt><dd data-diag="dPair">&ndash;</dd>
+      <dt data-i18n="diag.path">Path</dt><dd data-diag="dPath">&ndash;</dd>
+      <dt data-i18n="diag.ipv6">IPv6 candidate (reflexive)</dt><dd data-diag="dIpv6">&ndash;</dd>
+      <dt data-i18n="diag.rtt">Round-trip time</dt><dd data-diag="dRtt">&ndash;</dd>
+      <dt data-i18n="diag.loss">Packet loss</dt><dd data-diag="dLoss">&ndash;</dd>
+      <dt data-i18n="diag.jitter">Jitter</dt><dd data-diag="dJitter">&ndash;</dd>
+      <dt data-i18n="diag.freeze">Freezes</dt><dd data-diag="dFreeze">&ndash;</dd>
+      <dt data-i18n="diag.videoCodec">Video codec (actual)</dt><dd data-diag="dCodec">&ndash;</dd>
+      <dt data-i18n="diag.res">Resolution</dt><dd data-diag="dRes">&ndash;</dd>
+      <dt data-i18n="diag.fps">Frame rate</dt><dd data-diag="dFps">&ndash;</dd>
+      <dt data-i18n="diag.limit">Quality limit</dt><dd data-diag="dLimit">&ndash;</dd>
+      <dt data-i18n="diag.bitrate">Bitrate</dt><dd data-diag="dBitrate">&ndash;</dd>
+      <dt data-streamer-only hidden data-i18n="diag.quality">Quality preset</dt><dd data-diag="dQuality" data-streamer-only hidden>&ndash;</dd>
+      <dt data-i18n="diag.audioCodec">Audio codec (actual)</dt><dd data-diag="dAudioCodec">&ndash;</dd>
+      <dt data-i18n="diag.audioBitrate">Audio bitrate</dt><dd data-diag="dAudioBitrate">&ndash;</dd>
+      <dt data-i18n="diag.impl">Codec implementation</dt><dd data-diag="dImpl">&ndash;</dd>
+      <dt data-i18n="diag.cands">Gathered candidates</dt><dd data-diag="dCands">&ndash;</dd>
+    </dl>
+  </section>
+
+  <section class="panel shell-panel">
+    <div class="panel-header">
+      <h2 data-i18n="app.log">Log</h2>
+      <div class="panel-actions">
+        <button id="logToggle" class="btn-ghost" type="button" aria-expanded="true" aria-controls="log" hidden>
+          <span data-i18n="log.hide">Hide log</span>
+        </button>
+      </div>
+    </div>
+    <pre id="log" role="log" aria-live="polite" data-i18n-aria-label="app.log"></pre>
+  </section>
 
   <footer class="site-footer">
     <a class="icon-btn" href="https://github.com/dener-p/golive" target="_blank" rel="noopener noreferrer" data-i18n-title="report.github" data-i18n-aria-label="report.github" title="GitHub repository" aria-label="GitHub repository">
@@ -232,9 +126,153 @@
     </div>
   </div>
 
+  <!-- One room = one clone of this. Elements are matched by data-el, never id,
+       so many panels can coexist. -->
+  <template id="roomPanelTpl">
+    <section class="room-panel" data-el="panel">
+      <header class="room-bar">
+        <span class="room-name" data-el="roomName"></span>
+        <span class="room-badge" data-el="badge" hidden></span>
+        <div class="room-bar-actions">
+          <button class="icon-btn" data-el="audioBtn" type="button" data-i18n-title="app.volume" title="Audio" aria-label="Audio">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          </button>
+          <button class="icon-btn" data-el="fullBtn" type="button" data-i18n-title="app.theater" title="Fullscreen" aria-label="Fullscreen">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+          </button>
+          <button class="icon-btn" data-el="openBtn" type="button" data-i18n-title="shell.openTab" title="Open in a new tab" aria-label="Open in a new tab">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></svg>
+          </button>
+          <button class="icon-btn" data-el="removeBtn" type="button" data-i18n-title="shell.remove" title="Remove" aria-label="Remove">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="room-scroll">
+        <div class="room-controls streamer-only" data-el="controlsBar">
+          <div class="controls-group">
+            <button data-el="startBtn" class="primary" type="button">
+              <span data-i18n="app.startSharing">Start sharing</span>
+            </button>
+            <button data-el="stopBtn" class="danger" type="button" disabled>
+              <span data-i18n="app.stop">Stop</span>
+            </button>
+          </div>
+          <div class="controls-group">
+            <div class="text-field">
+              <label data-i18n="app.roomId">Room ID</label>
+              <input data-el="roomId" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" maxlength="24" placeholder="auto">
+              <button type="button" data-el="randomRoomBtn" data-i18n-title="app.randomRoom" title="Generate a random ID">
+                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+              </button>
+            </div>
+            <div class="text-field pin-field">
+              <label data-i18n="app.roomPin">PIN</label>
+              <input data-el="roomPin" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="8" data-i18n-placeholder="app.roomPinPlaceholder" placeholder="no PIN" data-i18n-title="app.roomPinHint" title="Optional PIN">
+            </div>
+            <label class="check-pill">
+              <input type="checkbox" data-el="preferAv1" checked>
+              <span data-i18n="app.preferAv1">Prefer AV1</span>
+            </label>
+            <label class="check-pill">
+              <input type="checkbox" data-el="shareAudio" checked>
+              <span data-i18n="app.shareAudio">Share audio</span>
+            </label>
+            <div class="select-field">
+              <label data-i18n="app.quality">Quality</label>
+              <select data-el="quality"></select>
+            </div>
+          </div>
+          <div class="controls-group">
+            <div class="select-field peer-field">
+              <label data-i18n="diag.forViewer">Diagnostics for</label>
+              <select data-el="peerSelect"></select>
+            </div>
+            <div class="select-field peer-field">
+              <label data-el="dPeerQualityLabel" hidden data-i18n="diag.peerQuality">Quality for this viewer</label>
+              <div data-el="dPeerQuality" hidden><select data-el="peerQualitySelect"></select></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="room-viewer-controls" data-el="viewerControls" hidden>
+          <div class="controls-group">
+            <button data-el="pipBtn" class="btn-ghost" type="button" data-i18n-title="app.pip" title="Picture-in-picture">
+              <span data-el="pipLabel" data-i18n="app.pip">Picture-in-picture</span>
+            </button>
+            <button data-el="takeStageBtn" class="btn-ghost" type="button" hidden data-i18n-title="handoff.takeStageHint" title="Ask the host to present your screen">
+              <span data-i18n="handoff.takeStage">Take the stage</span>
+            </button>
+            <button data-el="reconnectBtn" class="btn-ghost" type="button" hidden data-i18n="diag.reconnect">Reconnect</button>
+          </div>
+        </div>
+
+        <div class="room-alert alert" data-el="alert" role="alert" hidden></div>
+
+        <div class="alert warn room-handoff" data-el="handoffPrompt" role="alertdialog" hidden>
+          <span data-el="handoffText"></span>
+          <div class="handoff-actions">
+            <button data-el="handoffAccept" class="primary" type="button" data-i18n="handoff.accept">Let them present</button>
+            <button data-el="handoffDecline" class="btn-ghost" type="button" data-i18n="handoff.decline">Not now</button>
+          </div>
+        </div>
+
+        <div class="audio-hint" data-el="audioHint" hidden>
+          <span data-i18n="app.audioHint">🔊 Stream audio available — starts muted by browser. Click to unmute.</span>
+          <button data-el="unmuteBtn" data-i18n="app.unmute">Unmute</button>
+        </div>
+
+        <section class="video-wrap" data-el="videoWrap">
+          <div class="video-placeholder" data-el="videoPlaceholder">
+            <div class="placeholder-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                <line x1="8" y1="21" x2="16" y2="21"></line>
+                <line x1="12" y1="17" x2="12" y2="21"></line>
+              </svg>
+            </div>
+            <p data-el="placeholderText"></p>
+          </div>
+          <div class="pin-gate" data-el="pinGate" hidden>
+            <form data-el="pinForm" class="pin-form" autocomplete="off">
+              <h2 data-i18n="pin.title">This room needs a PIN</h2>
+              <p class="pin-hint" data-i18n="pin.hint">Ask the host for the PIN.</p>
+              <div class="pin-row">
+                <input data-el="pinInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" data-i18n-placeholder="pin.placeholder" placeholder="PIN">
+                <button class="primary" type="submit" data-i18n="pin.submit">Watch</button>
+              </div>
+              <p class="pin-error" data-el="pinError" hidden data-i18n="pin.wrong">Wrong PIN. Try again.</p>
+            </form>
+          </div>
+          <video data-el="video" autoplay playsinline controls hidden></video>
+          <section class="volume-bar" data-el="volumeBar" hidden>
+            <button data-el="volMuteBtn" class="btn-ghost" type="button" aria-pressed="false" data-i18n-title="app.volume" title="Volume"></button>
+            <input data-el="volume" class="volume-slider" type="range" min="0" max="1" step="0.01" value="1" data-i18n-aria-label="app.volume" aria-label="Volume">
+            <span data-el="volumePct" class="volume-pct">100%</span>
+          </section>
+        </section>
+
+        <section class="link-row streamer-only" data-el="linkRow" hidden>
+          <input data-el="roomUrl" type="text" readonly spellcheck="false">
+          <button data-el="copyBtn" type="button">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span data-i18n="app.copyLink">Copy link</span>
+          </button>
+          <button data-el="shareBtn" type="button" hidden>
+            <span data-i18n="link.share">Share</span>
+          </button>
+          <button data-el="qrBtn" type="button">
+            <span data-i18n="link.qr">QR code</span>
+          </button>
+        </section>
+      </div>
+    </section>
+  </template>
+
   <script src="/qr.js"></script>
   <script src="/i18n.js"></script>
-  <script src="/app.js"></script>
   <script src="/report.js"></script>
+  <script type="module" src="/shell.js"></script>
 </body>
 </html>

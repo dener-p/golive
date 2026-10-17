@@ -1,0 +1,2365 @@
+// Golive: browser screen sharing over WebRTC, signaled by Cloudflare Workers.
+// Host: /host   Viewer: /watch/<roomId>   Landing: /
+// The streamer keeps one RTCPeerConnection per viewer (a mesh); the
+// diagnostics panel describes whichever viewer is selected.
+"use strict";
+
+// One room = one instance of createRoom(). The shell (shell.js) creates a panel
+// per room and hands in `els` (that panel's elements, keyed by data-el) and
+// `opts`. All of the room's state is closed over here, so any number of rooms
+// can run side by side in one page without stepping on each other.
+//
+// `els.panel` must be the element that contains the room's own chrome (video,
+// controls, diagnostics toggles); shell-level chrome (header, log, modals) is
+// handled by the shell and reported back through `opts` callbacks.
+export function createRoom(els, opts = {}) {
+  const $ = (id) => els[id] || null;
+  const PANEL = els.panel || null;
+  let ROLE = opts.role === "streamer" ? "streamer" : "viewer";
+  let roomFromUrl = opts.room || null;
+  const EMBED = false; // native panels now; the iframe/embed shell is gone
+
+// STUN only. No TURN on purpose: if no direct path exists, ICE fails visibly.
+// A few STUN servers spread across networks so one that is blocked or
+// unreachable does not cost us candidates. Cloudflare's is dual-stack and can
+// return an IPv6 server-reflexive candidate when the network has working IPv6,
+// which is what makes a NAT-free (direct) path possible.
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+    { urls: "stun:stun.cloudflare.com:3478" },
+  ],
+  // Pre-gather ICE candidates so the first offer/answer starts connecting sooner.
+  iceCandidatePoolSize: 2,
+};
+
+// Opus tuning for shared tab/system audio. Opus is negotiated through SDP, not
+// setParameters, so `preferOpus()` edits the offer's fmtp line. The default cap
+// is only ~32 kbps; this raises it and keeps music from collapsing to mono.
+const OPUS_MAX_BITRATE = 128_000;
+const OPUS_STEREO = true;
+
+// The viewer only ever talks to one streamer, so it uses a single fixed key.
+const VIEWER_KEY = "streamer";
+
+// Room IDs are shared in the URL, so keep them lowercase and URL-safe.
+const ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
+const ROOM_STORAGE_KEY = "golive.roomId";
+const AUDIO_PREFS_KEY = "golive.audio";
+const PREFS_KEY = "golive.prefs";
+
+// A /watch/<id> path means viewer; /host (and anything else) means host. A
+// presenter handoff swaps these at runtime on the same page, so they are not
+// constants.
+
+let ws = null;
+let localStream = null;
+let roomId = roomFromUrl;
+let statsTimer = null;
+let focusedId = null; // peer whose details the diagnostics panel shows
+const conns = new Map(); // peerId -> connection state
+
+// Reconnect state for the signaling socket (viewers wait, streamers resume).
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+// The backoff only resets once a socket has stayed up this long, so a connection
+// that opens then immediately drops keeps backing off instead of retrying every
+// second (each retry re-runs a full offer + candidate exchange).
+const SIGNAL_STABLE_MS = 10000;
+let signalingRoom = null;
+let signalingRole = null;
+
+// Presenter handoff state. A viewer captures its screen on the click (capture
+// needs a user gesture, so it can never be triggered remotely) and asks the
+// streamer, which grants or denies; only then does the stage move.
+let stageRequest = null;          // { stream, timer } while we wait for an answer
+let pendingHandoffFrom = null;    // streamer: the peer id asking to present
+let streamerRebuild = false;      // viewer: the next offer comes from a new presenter
+const STAGE_REQUEST_TIMEOUT_MS = 45000;
+
+// A per-tab participant token, sent with the signaling socket. The room uses it
+// to recognize the same participant reconnecting and replace its own stale
+// socket instead of refusing the connection as "room in use" / "room full" —
+// which used to strand a live room until the host picked a new room ID.
+const SIGNAL_TOKEN = (() => {
+  const key = "golive.signalToken";
+  const fresh = () => Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+  try {
+    let v = sessionStorage.getItem(key);
+    if (!v) { v = fresh(); sessionStorage.setItem(key, v); }
+    return v;
+  } catch {
+    return fresh();
+  }
+})();
+
+// Optional room PIN. The host sets or clears it and it rides on the signaling
+// socket URL, so the Durable Object enforces it without extra messages. A viewer
+// that arrives without it is asked for it; a wrong one is rejected and re-asked.
+const PIN_RE = /^\d{4,8}$/;
+// A viewer's PIN is remembered per room (a tab may watch several rooms, each
+// with its own PIN). The host passes its PIN in opts.
+const PIN_SESSION_KEY = roomFromUrl ? "golive.pin." + roomFromUrl : "golive.pin";
+let roomPin = opts.pin || (() => {
+  try { return sessionStorage.getItem(PIN_SESSION_KEY) || ""; } catch { return ""; }
+})();
+
+const STAT_FIELDS = [
+  "dPair", "dPath", "dIpv6", "dRtt", "dLoss", "dJitter", "dFreeze",
+  "dCodec", "dRes", "dFps", "dLimit", "dBitrate", "dUpload",
+  "dAudioCodec", "dAudioBitrate", "dImpl", "dCands",
+];
+
+// Diagnostics rows that only mean something for the host (they are shown or
+// hidden with the role, including when a handoff flips it at runtime).
+const STREAMER_STAT_FIELDS = [
+  "dViewersLabel", "dViewers", "dUploadLabel", "dUpload",
+  "dPeerLabel", "dPeer", "dQualityLabel", "dQuality",
+];
+
+// Total upload above this (Mbps) usually means the host's connection will
+// struggle to feed every viewer; the diagnostics warns once when it crosses.
+const UPLOAD_WARN_MBPS = 25;
+let uploadWarned = false;
+
+// ---------- UI helpers ----------
+
+function log(msg, level = "") {
+  if (opts.onLog) opts.onLog(msg, level);
+}
+
+// Report this room's playback state so the panel badge can show live/waiting.
+function state(s) {
+  if (opts.onState) opts.onState(s);
+}
+
+// Diagnostics values are kept per room so side-by-side rooms do not fight over
+// one table; the shell renders the selected room's values from this map.
+const diag = {};
+function setField(id, text, cls = "") {
+  diag[id] = { text, cls };
+  if (opts.onDiag) opts.onDiag(id, text, cls);
+}
+
+function showAlert(msg, level = "warn") {
+  const el = $("alert");
+  el.textContent = msg;
+  el.className = `alert ${level}`;
+  el.hidden = false;
+}
+
+function clearAlert() {
+  $("alert").hidden = true;
+}
+
+// In embed mode, tell the parent frame (/squad) whether this tile carries a
+// live stream, so the console can badge it. Same-origin only.
+function postState(state) {
+  if (!EMBED || window.parent === window) return;
+  try {
+    window.parent.postMessage({ channel: "golive", type: "state", room: roomId, state }, location.origin);
+  } catch { /* parent gone */ }
+}
+
+// Wire the page up as a squad tile: no chrome of its own, audio driven by the
+// parent frame over postMessage. The class is normally already set by the
+// inline head script (to avoid a flash); this is a fallback and the JS side.
+function setupEmbed() {
+  document.documentElement.classList.add("embed");
+  const video = $("video");
+  video.controls = false;
+  // Report live/waiting from the element itself so the badge follows the real
+  // playback state, including buffering and the stream ending.
+  video.addEventListener("playing", () => postState("live"));
+  video.addEventListener("waiting", () => postState("waiting"));
+  video.addEventListener("emptied", () => postState("waiting"));
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin) return;
+    const d = e.data;
+    if (!d || d.channel !== "golive" || d.type !== "audio") return;
+    const v = $("video");
+    v.muted = !!d.muted;
+    if (typeof d.volume === "number") v.volume = Math.min(1, Math.max(0, d.volume));
+    if (!v.muted && v.volume === 0) v.volume = 1;
+    // A parent click is a user gesture, so resuming playback here is allowed.
+    if (!v.muted && v.paused) {
+      const p = v.play();
+      if (p && typeof p.catch === "function") p.catch(() => { });
+    }
+    syncVolumeUI();
+    checkAudioHint();
+  });
+  postState("waiting");
+}
+
+// Viewer volume/mute is remembered across reloads. Audio still starts muted so
+// autoplay is permitted; a saved "unmuted" choice is restored once playback has
+// started (see pc.ontrack). `audioState` tracks the last applied/known state so
+// programmatic changes aren't mistaken for user ones and persisted.
+let audioState = { volume: 1, muted: true };
+
+function loadAudioPrefs() {
+  try {
+    const raw = localStorage.getItem(AUDIO_PREFS_KEY);
+    if (raw) {
+      const o = JSON.parse(raw);
+      const volume = typeof o.volume === "number" && o.volume >= 0 && o.volume <= 1 ? o.volume : 1;
+      return { volume, muted: o.muted !== false };
+    }
+  } catch { /* storage unavailable */ }
+  return { volume: 1, muted: true };
+}
+
+function saveAudioPrefs() {
+  try { localStorage.setItem(AUDIO_PREFS_KEY, JSON.stringify(audioState)); } catch { /* storage unavailable */ }
+}
+
+// Streamer preferences (quality preset, Prefer AV1, Share audio) are remembered
+// so a returning host does not have to re-pick them on every visit.
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (raw) return JSON.parse(raw) || {};
+  } catch { /* storage unavailable */ }
+  return {};
+}
+
+function savePrefs(patch) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch })); } catch { /* storage unavailable */ }
+}
+
+// Apply volume/mute without treating it as a new user preference.
+function applyAudioState(video, prefs) {
+  audioState = { volume: prefs.volume, muted: prefs.muted };
+  video.volume = prefs.volume;
+  video.muted = prefs.muted;
+}
+
+// Viewer volume-control icons (unmuted / muted).
+const VOL_ICON_ON = `<svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`;
+const VOL_ICON_OFF = `<svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>`;
+
+// Reflect the video element's volume/mute in the viewer's volume bar.
+function syncVolumeUI() {
+  const video = $("video");
+  const slider = $("volume");
+  if (!video || !slider) return;
+  slider.value = String(video.volume);
+  const pct = $("volumePct");
+  if (pct) pct.textContent = `${Math.round(video.volume * 100)}%`;
+  const btn = $("volMuteBtn");
+  if (btn) {
+    btn.innerHTML = video.muted || video.volume === 0 ? VOL_ICON_OFF : VOL_ICON_ON;
+    btn.setAttribute("aria-pressed", String(video.muted));
+  }
+}
+
+function resetStatValues() {
+  STAT_FIELDS.forEach((id) => setField(id, "\u2013"));
+}
+
+function setVideoActive(active, isWaiting = false) {
+  const vid = $("video");
+  const ph = $("videoPlaceholder");
+  const pht = $("placeholderText");
+  if (!ph || !vid) return;
+  if (active) {
+    ph.hidden = true;
+    vid.hidden = false;
+  } else {
+    ph.hidden = false;
+    vid.hidden = true;
+    if (pht) {
+      if (ROLE === "viewer") {
+        pht.textContent = isWaiting ? t("placeholder.waiting") : t("placeholder.disconnected");
+      } else {
+        pht.textContent = t("placeholder.start");
+      }
+    }
+  }
+}
+
+function checkAudioHint() {
+  const hint = $("audioHint");
+  const vid = $("video");
+  if (!hint || !vid) return;
+  // The volume bar is only useful once the remote stream actually carries audio.
+  const hasAudio = ROLE === "viewer" && vid.srcObject && vid.srcObject.getAudioTracks().length > 0;
+  const bar = $("volumeBar");
+  if (bar) bar.hidden = !hasAudio;
+  hint.hidden = !(hasAudio && vid.muted);
+  if (hasAudio) syncVolumeUI();
+}
+
+function resetStatsFields() {
+  resetStatValues();
+  setField("dIce", "new");
+  setField("dPc", "\u2013");
+  if (ROLE === "streamer") {
+    setField("dViewers", String(conns.size));
+    setField("dQuality", presetLabel());
+  }
+}
+
+function peerLabel(peerId) {
+  return ROLE === "viewer" ? t("peer.streamer") : t("peer.viewer", { id: peerId });
+}
+
+function iceClass(s) {
+  return s === "connected" || s === "completed" ? "ok" : s === "failed" ? "bad" : s === "disconnected" ? "warn" : "";
+}
+
+// ---------- Codec support ----------
+
+function hasAv1(caps) {
+  return !!caps && caps.codecs.some((c) => c.mimeType.toLowerCase() === "video/av1");
+}
+
+function reportSupport() {
+  try {
+    const send = hasAv1(RTCRtpSender.getCapabilities("video"));
+    const recv = hasAv1(RTCRtpReceiver.getCapabilities("video"));
+    const text = `${t("support.send")}: ${t(send ? "support.yes" : "support.no")}, ${t("support.receive")}: ${t(recv ? "support.yes" : "support.no")}`;
+    const relevant = ROLE === "streamer" ? send : recv;
+    setField("dSupport", text, relevant ? "ok" : "warn");
+    if (!relevant) {
+      log(t(ROLE === "streamer" ? "log.av1UnavailableSend" : "log.av1UnavailableRecv"), "warn");
+    }
+  } catch (e) {
+    setField("dSupport", t("support.unknown"), "warn");
+  }
+}
+
+// Put AV1 first, keep every other codec (including RTX/RED/FEC) as fallbacks.
+function applyCodecPreferences(transceiver, kind) {
+  if (!$("preferAv1").checked) {
+    log(t("log.av1Disabled"));
+    return;
+  }
+  if (!transceiver || typeof transceiver.setCodecPreferences !== "function") {
+    log(t("log.codecPrefsUnsupported"), "warn");
+    return;
+  }
+  const caps = (kind === "sender" ? RTCRtpSender : RTCRtpReceiver).getCapabilities("video");
+  if (!hasAv1(caps)) {
+    log(t("log.av1NotSupported"), "warn");
+    return;
+  }
+  const isAv1 = (c) => c.mimeType.toLowerCase() === "video/av1";
+  const prefs = [...caps.codecs.filter(isAv1), ...caps.codecs.filter((c) => !isAv1(c))];
+  try {
+    transceiver.setCodecPreferences(prefs);
+    log(t("log.codecPrefsSet", { count: prefs.length - caps.codecs.filter(isAv1).length }));
+  } catch (e) {
+    log(t("log.codecPrefsFailed", { message: e.message }), "warn");
+  }
+}
+
+// ---------- Quality presets ----------
+
+// Sender-side quality presets. maxBitrate is a ceiling applied with
+// RTCRtpSender.setParameters(); the browser still adapts to the network, so
+// the achieved bitrate can be lower (never higher) than maxBitrate.
+// targetHeight is the encoded resolution we aim for; the scale factor is
+// derived from the captured track so an oversized capture (a 1440p/4K screen)
+// is not crammed into a 1080p bitrate budget. scaleResolutionDownBy is the
+// fallback when the captured size is unknown. Screen content is mostly static,
+// so the presets prefer keeping resolution sharp over keeping every frame.
+const QUALITY_PRESETS = {
+  // Encode at whatever the screen actually is, with no fractional downscale
+  // (which blurs text) and a ceiling high enough to keep it sharp. The cost
+  // scales with the monitor, so it suits a LAN or a fast link.
+  native: {
+    labelKey: "preset.native",
+    shortKey: "preset.native.short",
+    contentHint: "text",
+    maxBitrate: 30_000_000,
+    maxFramerate: 60,
+    captureFps: 60,
+    targetHeight: null, // null keeps the captured size (scale stays 1)
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  "4k60": {
+    labelKey: "preset.4k60",
+    shortKey: "preset.4k60.short",
+    contentHint: "text",
+    maxBitrate: 40_000_000,
+    maxFramerate: 60,
+    captureFps: 60,
+    targetHeight: 2160,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  "4k30": {
+    labelKey: "preset.4k30",
+    shortKey: "preset.4k30.short",
+    contentHint: "text",
+    maxBitrate: 25_000_000,
+    maxFramerate: 30,
+    captureFps: 30,
+    targetHeight: 2160,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  "1440p60": {
+    labelKey: "preset.1440p60",
+    shortKey: "preset.1440p60.short",
+    contentHint: "text",
+    maxBitrate: 20_000_000,
+    maxFramerate: 60,
+    captureFps: 60,
+    targetHeight: 1440,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  "1080p60": {
+    labelKey: "preset.1080p60",
+    shortKey: "preset.1080p60.short",
+    contentHint: "text",
+    maxBitrate: 12_000_000,
+    maxFramerate: 60,
+    captureFps: 60,
+    targetHeight: 1080,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  "1080p30": {
+    labelKey: "preset.1080p30",
+    shortKey: "preset.1080p30.short",
+    contentHint: "text",
+    maxBitrate: 8_000_000,
+    maxFramerate: 30,
+    captureFps: 30,
+    targetHeight: 1080,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  // Screen content is often static text. A low frame rate with a high bitrate
+  // ceiling keeps far more detail per frame, so text stays sharp instead of
+  // being blurred away when the encoder adapts.
+  text: {
+    labelKey: "preset.text",
+    shortKey: "preset.text.short",
+    contentHint: "text",
+    maxBitrate: 8_000_000,
+    maxFramerate: 15,
+    captureFps: 15,
+    targetHeight: 1440,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "maintain-resolution",
+  },
+  "720p30": {
+    labelKey: "preset.720p30",
+    shortKey: "preset.720p30.short",
+    contentHint: "text",
+    maxBitrate: 4_000_000,
+    maxFramerate: 30,
+    captureFps: 30,
+    targetHeight: 720,
+    scaleResolutionDownBy: 1.5,
+    degradationPreference: "balanced",
+  },
+  low: {
+    labelKey: "preset.low",
+    shortKey: "preset.low.short",
+    // Data saver already prefers framerate over resolution; "motion" makes the
+    // encoder spend its few bits on smoothness rather than per-frame detail.
+    contentHint: "motion",
+    maxBitrate: 1_000_000,
+    maxFramerate: 24,
+    captureFps: 24,
+    targetHeight: 540,
+    scaleResolutionDownBy: 2,
+    degradationPreference: "maintain-framerate",
+  },
+  auto: {
+    labelKey: "preset.auto",
+    shortKey: "preset.auto.short",
+    contentHint: "text",
+    maxBitrate: null,
+    maxFramerate: null,
+    captureFps: 60,
+    targetHeight: null,
+    scaleResolutionDownBy: 1,
+    degradationPreference: "balanced",
+  },
+};
+
+function currentPresetKey() {
+  const el = $("quality");
+  return el && QUALITY_PRESETS[el.value] ? el.value : "1080p60";
+}
+
+function presetLabel(key = currentPresetKey()) {
+  const p = QUALITY_PRESETS[key] || QUALITY_PRESETS["1080p60"];
+  return t(p.labelKey);
+}
+
+// Screen share benefits from the "text" hint (sharp edges and flat, solid
+// areas), but a browser is allowed to ignore a value it does not implement and
+// keep the previous one. Set it, read it back, and fall back to "detail"
+// (presentations/pages) when the hint does not take.
+function applyContentHint(track, hint) {
+  if (!track || !("contentHint" in track)) return;
+  const wanted = hint || "detail";
+  try {
+    track.contentHint = wanted;
+    if (track.contentHint !== wanted) track.contentHint = "detail";
+  } catch { /* hint unsupported */ }
+}
+
+// Encoded resolution follows the preset's target instead of a fixed factor, so
+// a large capture is scaled to the resolution its bitrate budget was chosen for
+// (and never upscaled). The scale fits the capture into a 16:9 box of the
+// preset's target height using whichever ratio is larger, so an ultrawide or
+// portrait screen does not blow past the target width and overshoot the budget.
+function scaleForPreset(preset, sender) {
+  const track = sender.track;
+  const settings = track && typeof track.getSettings === "function" ? track.getSettings() : null;
+  const w = settings && settings.width ? settings.width : 0;
+  const h = settings && settings.height ? settings.height : 0;
+  if (preset.targetHeight && w && h) {
+    const targetW = (preset.targetHeight * 16) / 9;
+    const targetH = preset.targetHeight;
+    // Never upscale: scaleResolutionDownBy must be >= 1, so a capture smaller
+    // than the preset's target is left at its native size.
+    const scale = Math.max(1, Math.max(w / targetW, h / targetH));
+    return Math.round(scale * 100) / 100;
+  }
+  return preset.scaleResolutionDownBy || 1;
+}
+
+// Apply a preset to one video sender. maxBitrate is a ceiling, not a floor:
+// the encoder may send less when the network or CPU is constrained.
+async function applyQualityToSender(sender, key) {
+  if (!sender || typeof sender.getParameters !== "function" || typeof sender.setParameters !== "function") return;
+  const preset = QUALITY_PRESETS[key] || QUALITY_PRESETS.auto;
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    const enc = params.encodings[0];
+    if (preset.maxBitrate == null) {
+      // "Auto": drop the limits and let the browser decide.
+      delete enc.maxBitrate;
+      delete enc.maxFramerate;
+      delete enc.scaleResolutionDownBy;
+      params.degradationPreference = "balanced";
+    } else {
+      enc.maxBitrate = preset.maxBitrate;
+      if (preset.maxFramerate != null) {
+        enc.maxFramerate = preset.maxFramerate;
+      } else {
+        delete enc.maxFramerate;
+      }
+      enc.scaleResolutionDownBy = scaleForPreset(preset, sender);
+      enc.priority = "high";
+      enc.networkPriority = "high";
+      params.degradationPreference = preset.degradationPreference;
+    }
+    await sender.setParameters(params);
+  } catch (e) {
+    log(t("log.qualityApplyFailed", { label: t(preset.labelKey), message: e.message }), "warn");
+  }
+}
+
+// Streamer: per-viewer quality. A viewer not listed here follows the room
+// preset; choosing one for a viewer only changes that viewer's sender, so a
+// single laggy peer can be dialed down without lowering the whole room. The
+// override lives as long as the viewer stays connected.
+const perViewerQuality = new Map();
+
+function qualityKeyFor(peerId) {
+  const override = perViewerQuality.get(peerId);
+  return override && QUALITY_PRESETS[override] ? override : currentPresetKey();
+}
+
+// Streamer: apply the room preset to every viewer's video sender, except the
+// viewers that carry an override (on change, and for new joins).
+async function applyQualityToAllSenders(key = currentPresetKey()) {
+  for (const [peerId, conn] of conns.entries()) {
+    const k = perViewerQuality.get(peerId) || key;
+    for (const sender of conn.pc.getSenders()) {
+      if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, k);
+    }
+  }
+}
+
+// ---------- Signaling ----------
+
+function wsUrl(room, role) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const q = new URLSearchParams({ room, role, token: SIGNAL_TOKEN });
+  if (roomPin) q.set("pin", roomPin);
+  return `${proto}://${location.host}/ws?${q.toString()}`;
+}
+
+// Open the signaling socket for a room. Registration happens on connect (the
+// room and role ride in the query string), so there is no create/join
+// handshake. The socket auto-reconnects with backoff while the page is live.
+function connectSignaling(room, role) {
+  signalingRoom = room;
+  signalingRole = role;
+  return new Promise((resolve, reject) => {
+    setField("dSignaling", t("signal.connecting"));
+    const sock = new WebSocket(wsUrl(room, role));
+    ws = sock;
+    let settled = false;
+    // Reset the reconnect backoff only after the socket has been stable for a
+    // while; see SIGNAL_STABLE_MS.
+    let stableTimer = null;
+    sock.onopen = () => {
+      setField("dSignaling", t("signal.connected"), "ok");
+      stableTimer = setTimeout(() => { stableTimer = null; reconnectDelay = 1000; }, SIGNAL_STABLE_MS);
+      if (!settled) { settled = true; resolve(); }
+    };
+    sock.onerror = () => {
+      if (ws !== sock) return;
+      setField("dSignaling", t("signal.error"), "bad");
+      if (!settled) { settled = true; reject(new Error(t("log.signalUnreachable"))); }
+    };
+    sock.onclose = (ev) => {
+      if (ws !== sock) return;
+      ws = null;
+      if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
+      setField("dSignaling", t("signal.closed"), "warn");
+      const code = ev && ev.code ? ev.code : 0;
+      log(t("log.signalClosed", { code }).trim(), "warn");
+      if (isLive()) scheduleReconnect();
+    };
+    sock.onmessage = (ev) => {
+      if (ws !== sock) return; // a stale socket must not drive state
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      handleSignal(msg).catch((e) => log(t("log.signalHandleError", { message: e.message }), "bad"));
+    };
+  });
+}
+
+// A streamer stays live while it is sharing; a viewer stays live until it
+// leaves the page.
+function isLive() {
+  return ROLE === "streamer" ? !!localStream : true;
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || !signalingRoom) return;
+  const delay = reconnectDelay;
+  reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    if (!signalingRoom || !isLive()) return;
+    log(t("log.reconnecting", { room: signalingRoom }), "warn");
+    try {
+      await connectSignaling(signalingRoom, signalingRole);
+      log(t("log.reconnected"));
+    } catch {
+      scheduleReconnect();
+    }
+  }, delay);
+}
+
+function stopReconnecting() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnectDelay = 1000;
+  signalingRoom = null;
+  signalingRole = null;
+}
+
+function signal(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// Streamer -> viewer messages carry a "to"; viewer -> streamer messages are
+// tagged with the sender's peer id by the server.
+function makeSignal(type, peerId, payload) {
+  return ROLE === "streamer" ? { type, to: peerId, payload } : { type, payload };
+}
+
+// Gathering one connection can produce a dozen-plus ICE candidates, and every
+// WebSocket message is a Durable Object request, so candidates are coalesced and
+// flushed as one message per short window instead of one message per candidate.
+const CANDIDATE_FLUSH_MS = 100;
+
+function queueLocalCandidate(peerId, conn, candidate) {
+  if (candidate) conn.candBuffer.push(candidate.toJSON());
+  else conn.candEnd = true;
+  if (!conn.candTimer) {
+    conn.candTimer = setTimeout(() => flushLocalCandidates(peerId, conn), CANDIDATE_FLUSH_MS);
+  }
+  // Send the tail promptly instead of waiting out the window.
+  if (conn.candEnd) flushLocalCandidates(peerId, conn);
+}
+
+function flushLocalCandidates(peerId, conn) {
+  if (conn.candTimer) { clearTimeout(conn.candTimer); conn.candTimer = null; }
+  const candidates = conn.candBuffer;
+  const end = conn.candEnd;
+  if (!candidates.length && !end) return;
+  conn.candBuffer = [];
+  conn.candEnd = false;
+  signal(makeSignal("candidate", peerId, { candidates, end }));
+}
+
+async function handleSignal(msg) {
+  switch (msg.type) {
+    case "created":
+      // A reconnect keeps whichever peer connections are still healthy: the room
+      // re-announces every viewer (peer-joined) and the sweep drops the rest.
+      // Tearing them all down here interrupted every viewer on a signaling blip.
+      showRoomLink();
+      log(t("log.roomLive", { room: roomId }));
+      state("live");
+      if (conns.size) beginConnSweep();
+      break;
+    case "joined":
+      closeAllConns(); // fresh peer id after a reconnect
+      showPinGate(false);
+      log(t("log.joined", { room: msg.room }));
+      state("waiting");
+      showWaiting();
+      break;
+    case "streamer-waiting":
+      setTakeStageAvailable(false);
+      showWaiting();
+      break;
+    case "peer-joined": {
+      log(t("log.viewerJoined", { id: msg.peerId }));
+      clearAlert();
+      const existing = conns.get(msg.peerId);
+      // Still with us after a reconnect: keep its working connection (no
+      // renegotiation) and just mark it confirmed for the sweep.
+      if (existing) existing.confirmed = true;
+      else await startOffer(msg.peerId);
+      break;
+    }
+    case "peer-left":
+      log(t("log.viewerLeft", { id: msg.peerId }), "warn");
+      if (msg.peerId === pendingHandoffFrom) hideHandoffPrompt();
+      closeConn(msg.peerId);
+      break;
+    case "streamer-left":
+      // The streamer's signaling socket dropped; it may be reconnecting. Hold the
+      // connection and keep playing, and only tear down if it does not return.
+      log(t("log.streamerLeft"), "warn");
+      setTakeStageAvailable(false);
+      beginStreamerGrace();
+      break;
+    case "streamer-back":
+      // The streamer is connected again; settle without disturbing the media.
+      cancelStreamerGrace();
+      clearAlert();
+      setTakeStageAvailable(true);
+      break;
+    case "offer":
+      setTakeStageAvailable(true);
+      await handleOffer(msg.payload);
+      break;
+    case "answer":
+      await handleAnswer(msg.from, msg.payload);
+      break;
+    case "candidate":
+      await handleRemoteCandidate(ROLE === "viewer" ? VIEWER_KEY : msg.from, msg.payload);
+      break;
+    case "renegotiate":
+      // A viewer whose path stalled asked to be rebuilt from scratch. Rebuild
+      // its peer connection and send a fresh offer (same peer id).
+      log(t("log.renegotiateRequested", { id: msg.from }));
+      if (localStream) await startOffer(msg.from);
+      break;
+    case "peer-reset":
+      // A handoff is under way: the next offer comes from a different browser, so
+      // the old peer connection cannot be reused. Hold the picture through the
+      // grace period and rebuild when the new presenter offers.
+      log(t("log.presenterSwitching"), "warn");
+      streamerRebuild = true;
+      beginStreamerGrace(t("alert.presenterSwitching"));
+      break;
+    case "handoff-request":
+      log(t("log.stageRequested", { peer: peerLabel(msg.from) }), "warn");
+      showHandoffPrompt(msg.from);
+      break;
+    case "handoff-grant":
+      await acceptStage();
+      break;
+    case "handoff-deny":
+      log(t("log.stageDenied"), "warn");
+      cancelStageRequest();
+      showAlert(t("alert.stageDenied"), "warn");
+      break;
+    case "error": {
+      // A PIN rejection is not a retryable error: it opens the gate instead of
+      // the reconnect loop (the gate reconnects when the viewer submits).
+      if (msg.code === "pin-required" || msg.code === "pin-wrong") {
+        roomPin = "";
+        try { sessionStorage.removeItem(PIN_SESSION_KEY); } catch { /* storage unavailable */ }
+        log(t("log.pinRequired"), "warn");
+        showPinGate(true, msg.code === "pin-wrong");
+        setTakeStageAvailable(false);
+        stopReconnecting();
+        break;
+      }
+      const message = msg.code === "room-in-use" ? t("alert.roomInUse")
+        : msg.code === "room-full" ? t("alert.roomFull")
+        : msg.code === "room-taken" ? t("alert.roomTaken")
+        : msg.message;
+      log(t("log.serverError", { message }), "bad");
+      showAlert(message, "bad");
+      if (msg.code === "room-in-use" || msg.code === "room-full" || msg.code === "room-taken") {
+        if (ROLE === "streamer" && localStream) stopSharing();
+        else { stopReconnecting(); if (ws) ws.close(); }
+      }
+      break;
+    }
+  }
+}
+
+// ---------- Peer connections (one per viewer on the streamer side) ----------
+
+function createPc(peerId) {
+  closeConn(peerId); // replace any previous connection for this peer
+
+  const conn = {
+    pc: new RTCPeerConnection(RTC_CONFIG),
+    pending: [],
+    prevBytes: null,
+    prevAudioBytes: null,
+    warnedCodec: false,
+    candCounts: { local: {}, total: 0 },
+    // What kinds of local candidate we managed to gather, used to explain an
+    // ICE failure. "mdns" is Chrome's anonymized .local host candidate.
+    gathered: { host: false, srflx: false, relay: false, mdns: false, srflx6: false, host6: false },
+    display: null,
+    iceRestartTimer: null,
+    iceRestarts: 0,
+    // Outgoing ICE candidates waiting for the next flush (see queueLocalCandidate).
+    candBuffer: [],
+    candTimer: null,
+    candEnd: false,
+    confirmed: true, // see beginConnSweep
+  };
+  conns.set(peerId, conn);
+  if (!focusedId) setFocused(peerId);
+  updatePeerSelect();
+  updateViewerCount();
+  clearAlert();
+
+  const pc = conn.pc;
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      noteLocalCandidate(peerId, conn, e.candidate);
+      queueLocalCandidate(peerId, conn, e.candidate);
+    } else {
+      log(t("log.iceGatheringComplete", { peer: peerLabel(peerId) }));
+      queueLocalCandidate(peerId, conn, null);
+    }
+  };
+  pc.onicecandidateerror = (e) => {
+    // Common for unreachable STUN over one address family; informational.
+    log(t("log.iceCandidateError", { peer: peerLabel(peerId), code: e.errorCode || "", text: e.errorText || "" }).trim(), "warn");
+  };
+  pc.onicegatheringstatechange = () => log(t("log.iceGathering", { peer: peerLabel(peerId), state: pc.iceGatheringState }));
+  pc.oniceconnectionstatechange = () => onIceState(peerId);
+  pc.onconnectionstatechange = () => {
+    log(t("log.pcState", { peer: peerLabel(peerId), state: pc.connectionState }));
+    if (peerId === focusedId) setField("dPc", pc.connectionState);
+  };
+  pc.ontrack = (e) => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    const video = $("video");
+    video.srcObject = stream;
+    // Start muted so autoplay is allowed; the viewer unmutes with the
+    // video controls' speaker icon or the unmute banner. Once playback has
+    // actually started, restore the saved volume/mute. An embedded tile never
+    // restores a saved state: the console decides whether it has sound.
+    const prefs = EMBED ? { volume: 1, muted: true } : loadAudioPrefs();
+    applyAudioState(video, { volume: prefs.volume, muted: true });
+    const playing = video.play();
+    if (playing && typeof playing.then === "function") {
+      playing
+        .then(() => { if (!EMBED && !prefs.muted) video.muted = false; checkAudioHint(); })
+        .catch(() => { });
+    }
+    setVideoActive(true);
+    checkAudioHint();
+    state("live");
+    log(t(e.track.kind === "audio" ? "log.remoteAudio" : "log.remoteVideo"));
+  };
+
+  startStats();
+  return conn;
+}
+
+function closeConn(peerId) {
+  const conn = conns.get(peerId);
+  if (!conn) return;
+  if (conn.iceRestartTimer) {
+    clearTimeout(conn.iceRestartTimer);
+    conn.iceRestartTimer = null;
+  }
+  if (conn.candTimer) {
+    clearTimeout(conn.candTimer);
+    conn.candTimer = null;
+  }
+  const pc = conn.pc;
+  if (pc) {
+    pc.onicecandidate = pc.onicecandidateerror = pc.onicegatheringstatechange =
+      pc.oniceconnectionstatechange = pc.onconnectionstatechange = pc.ontrack = null;
+    try { pc.close(); } catch { /* already closed */ }
+  }
+  conns.delete(peerId);
+  perViewerQuality.delete(peerId);
+  if (conns.size === 0) stopStats();
+  if (focusedId === peerId) focusedId = conns.size ? conns.keys().next().value : null;
+  updatePeerSelect();
+  updateViewerCount();
+  updateReconnectBtn();
+
+  const next = focusedId ? conns.get(focusedId) : null;
+  if (next && next.pc) {
+    setField("dIce", next.pc.iceConnectionState, iceClass(next.pc.iceConnectionState));
+    setField("dPc", next.pc.connectionState || "\u2013");
+    renderFocused();
+  } else {
+    setField("dIce", "new");
+    setField("dPc", "\u2013");
+    resetStatValues();
+  }
+}
+
+function closeAllConns() {
+  for (const peerId of [...conns.keys()]) closeConn(peerId);
+}
+
+// The streamer's signaling socket can drop and come back (idle timeout, network
+// blip). Viewers used to tear down immediately on "streamer-left", which killed
+// the video for everyone; instead they hold the connection and keep playing, and
+// only give up if the streamer does not return within the grace period.
+const STREAMER_GRACE_MS = 10000;
+let streamerGraceTimer = null;
+
+function beginStreamerGrace(label) {
+  if (streamerGraceTimer) return;
+  showAlert(label || t("alert.streamerReconnecting"), "warn");
+  streamerGraceTimer = setTimeout(() => {
+    streamerGraceTimer = null;
+    clearAlert();
+    closeAllConns();
+    showWaiting();
+  }, STREAMER_GRACE_MS);
+}
+
+function cancelStreamerGrace() {
+  if (streamerGraceTimer) {
+    clearTimeout(streamerGraceTimer);
+    streamerGraceTimer = null;
+  }
+}
+
+// After the streamer reconnects, the room re-announces each viewer. Connections
+// that are still healthy are kept as-is; a viewer that is not re-announced left
+// while we were away, so it is dropped shortly after.
+const CONN_SWEEP_MS = 3000;
+let connSweepTimer = null;
+
+function beginConnSweep() {
+  if (connSweepTimer) clearTimeout(connSweepTimer);
+  for (const conn of conns.values()) conn.confirmed = false;
+  connSweepTimer = setTimeout(() => {
+    connSweepTimer = null;
+    for (const [peerId, conn] of [...conns]) if (!conn.confirmed) closeConn(peerId);
+  }, CONN_SWEEP_MS);
+}
+
+function updateViewerCount() {
+  if (ROLE === "streamer") setField("dViewers", String(conns.size));
+}
+
+function updatePeerSelect() {
+  if (ROLE !== "streamer") return;
+  const sel = $("peerSelect");
+  // Keep a viewer focused as soon as one is around, so the diagnostics panel and
+  // the per-viewer quality control have a target without a manual pick.
+  if (!focusedId && conns.size > 0) focusedId = conns.keys().next().value;
+  sel.innerHTML = "";
+  if (conns.size === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = t("peer.none");
+    sel.appendChild(opt);
+    sel.disabled = true;
+    updatePeerQuality();
+    return;
+  }
+  sel.disabled = false;
+  for (const peerId of conns.keys()) {
+    const opt = document.createElement("option");
+    opt.value = peerId;
+    opt.textContent = t("peer.viewer", { id: peerId });
+    if (peerId === focusedId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  updatePeerQuality();
+}
+
+// Streamer: the focused viewer's quality picker. The first entry ("follow the
+// room") clears the override; the rest pin that viewer to a preset.
+function updatePeerQuality() {
+  if (ROLE !== "streamer") return;
+  const label = $("dPeerQualityLabel");
+  const field = $("dPeerQuality");
+  const sel = $("peerQualitySelect");
+  if (!label || !field || !sel) return;
+  const show = !!focusedId && conns.size > 0;
+  label.hidden = !show;
+  field.hidden = !show;
+  if (!show) {
+    sel.innerHTML = "";
+    return;
+  }
+  sel.innerHTML = "";
+  const follow = document.createElement("option");
+  follow.value = "";
+  follow.textContent = t("diag.peerQualityFollow", { label: presetLabel() });
+  sel.appendChild(follow);
+  for (const key of Object.keys(QUALITY_PRESETS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = t(QUALITY_PRESETS[key].labelKey);
+    sel.appendChild(opt);
+  }
+  sel.value = perViewerQuality.get(focusedId) || "";
+}
+
+function setFocused(peerId) {
+  focusedId = peerId;
+  const conn = peerId ? conns.get(peerId) : null;
+  if (conn && conn.pc) {
+    setField("dIce", conn.pc.iceConnectionState, iceClass(conn.pc.iceConnectionState));
+    setField("dPc", conn.pc.connectionState || "\u2013");
+  }
+  updatePeerSelect();
+  updateReconnectBtn();
+  renderFocused();
+}
+
+function onIceState(peerId) {
+  const conn = conns.get(peerId);
+  if (!conn) return;
+  const s = conn.pc.iceConnectionState;
+  log(t("log.iceState", { peer: peerLabel(peerId), state: s }), iceClass(s));
+
+  // The streamer is the offerer, so it can retry the path with an ICE restart
+  // when the connection drops. "disconnected" is often transient, so give it a
+  // moment; "failed" is terminal, so act sooner. A recovery cancels any retry.
+  if (ROLE === "streamer") {
+    if (s === "disconnected" || s === "failed") {
+      scheduleIceRestart(peerId, s === "failed" ? 1500 : 4000);
+    } else if (s === "connected" || s === "completed") {
+      cancelIceRestart(conn);
+      conn.iceRestarts = 0;
+    }
+  } else {
+    // A viewer cannot restart ICE (it does not send offers), so it asks the
+    // streamer for a fresh one. "disconnected" is often transient, so wait
+    // longer than for "failed"; a recovery cancels and resets any retry.
+    if (s === "disconnected") scheduleViewerRecovery(6000);
+    else if (s === "failed") scheduleViewerRecovery(2500);
+    else if (s === "connected" || s === "completed") {
+      cancelViewerRecovery();
+      viewerRecoveries = 0;
+    }
+  }
+
+  if (peerId !== focusedId) return;
+  setField("dIce", s, iceClass(s));
+  updateReconnectBtn();
+  if (s === "failed") {
+    const hint = failureHints(conn);
+    if (hint) log(hint, "warn");
+    showAlert(hint ? `${t("alert.iceFailed")} ${hint}` : t("alert.iceFailed"), "bad");
+  } else if (s === "disconnected") {
+    showAlert(t("alert.iceDisconnected"), "warn");
+  } else if (s === "connected" || s === "completed") {
+    clearAlert();
+  }
+}
+
+// Best-effort explanation of an ICE failure from the candidates we gathered.
+// mDNS host candidates (Chrome's anonymized .local) mean the peers could be on
+// the same network, so a local cause — router client isolation or a
+// Public-network firewall — is worth naming. No srflx/relay at all means STUN
+// never produced a public address, so UDP/STUN is probably blocked by a
+// firewall or VPN. The two hints can both apply.
+function failureHints(conn) {
+  const g = conn.gathered;
+  const parts = [];
+  if (g.mdns) parts.push(t("hint.iceLan"));
+  if (!g.srflx && !g.relay) parts.push(t("hint.iceNoStun"));
+  return parts.join(" ");
+}
+
+// The manual Reconnect button is offered only while the focused connection is
+// down, so it appears exactly when the automatic recovery has not (yet) worked.
+function updateReconnectBtn() {
+  const btn = $("reconnectBtn");
+  if (!btn) return;
+  const conn = focusedId ? conns.get(focusedId) : null;
+  const s = conn && conn.pc ? conn.pc.iceConnectionState : "";
+  btn.hidden = !(s === "failed" || s === "disconnected");
+}
+
+// Manual recovery for the focused connection. A streamer forces an ICE restart
+// (bypassing the automatic cap); a viewer re-opens signaling, which re-registers
+// it and makes the streamer send a fresh offer that rebuilds the connection.
+async function manualReconnect() {
+  if (ROLE === "streamer") {
+    const conn = focusedId ? conns.get(focusedId) : null;
+    if (!conn) return;
+    conn.iceRestarts = 0;
+    cancelIceRestart(conn);
+    log(t("log.manualReconnect", { peer: peerLabel(focusedId) }), "warn");
+    await doIceRestart(focusedId);
+    return;
+  }
+  log(t("log.manualReconnectViewer"), "warn");
+  viewerRecoveries = 0;
+  await viewerReconnectSocket();
+}
+
+// Viewer-side automatic recovery. A viewer never sends offers, so it cannot
+// repair its own path; when ICE dies it asks the streamer to rebuild the
+// connection with a fresh offer. Without this a stalled viewer stays frozen
+// until the host restarts the transmission.
+const MAX_VIEWER_RECOVERIES = 5;
+let viewerRecoveryTimer = null;
+let viewerRecoveries = 0;
+
+function cancelViewerRecovery() {
+  if (viewerRecoveryTimer) {
+    clearTimeout(viewerRecoveryTimer);
+    viewerRecoveryTimer = null;
+  }
+}
+
+function scheduleViewerRecovery(delay) {
+  if (ROLE !== "viewer" || viewerRecoveryTimer) return;
+  if (streamerGraceTimer) return; // the streamer is expected back; wait for it
+  if (viewerRecoveries >= MAX_VIEWER_RECOVERIES) {
+    log(t("log.viewerRecoveryGaveUp"), "bad");
+    return;
+  }
+  viewerRecoveryTimer = setTimeout(() => {
+    viewerRecoveryTimer = null;
+    if (streamerGraceTimer) return; // the streamer is expected back
+    const conn = conns.get(VIEWER_KEY);
+    const state = conn && conn.pc ? conn.pc.iceConnectionState : "";
+    if (state !== "failed" && state !== "disconnected") return; // recovered on its own
+    viewerRecoveries++;
+    log(t("log.viewerRecovering", { attempt: viewerRecoveries, max: MAX_VIEWER_RECOVERIES }), "warn");
+    requestRenegotiate();
+  }, delay);
+}
+
+// Drop our half of the connection and ask for a new offer, so the streamer
+// rebuilds it — the same effect as restarting the transmission, but for one
+// viewer and without disturbing the room.
+function requestRenegotiate() {
+  closeConn(VIEWER_KEY);
+  showWaiting();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    signal(makeSignal("renegotiate"));
+  } else {
+    viewerReconnectSocket();
+  }
+}
+
+// Last resort: re-open signaling so the server hands us a new peer id and the
+// streamer offers a brand-new connection.
+async function viewerReconnectSocket() {
+  cancelStreamerGrace();
+  if (ws) { ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null; ws.close(); ws = null; }
+  stopReconnecting();
+  closeAllConns();
+  showWaiting();
+  try {
+    await connectSignaling(roomFromUrl, "viewer");
+  } catch {
+    scheduleReconnect();
+  }
+}
+
+// Cap the number of ICE restarts per connection so a permanently unreachable
+// peer does not keep renegotiating forever.
+const MAX_ICE_RESTARTS = 3;
+
+function cancelIceRestart(conn) {
+  if (conn && conn.iceRestartTimer) {
+    clearTimeout(conn.iceRestartTimer);
+    conn.iceRestartTimer = null;
+  }
+}
+
+function scheduleIceRestart(peerId, delay) {
+  const conn = conns.get(peerId);
+  if (!conn || conn.iceRestartTimer) return; // one attempt queued at a time
+  conn.iceRestartTimer = setTimeout(() => {
+    conn.iceRestartTimer = null;
+    const pc = conn.pc;
+    if (!pc || pc.signalingState === "closed") return;
+    const state = pc.iceConnectionState;
+    if (state !== "disconnected" && state !== "failed") return; // recovered
+    doIceRestart(peerId);
+  }, delay);
+}
+
+async function doIceRestart(peerId) {
+  const conn = conns.get(peerId);
+  if (!conn || !conn.pc || typeof conn.pc.restartIce !== "function") return;
+  if (conn.iceRestarts >= MAX_ICE_RESTARTS) {
+    log(t("log.iceRestartGaveUp", { peer: peerLabel(peerId) }), "bad");
+    return;
+  }
+  conn.iceRestarts++;
+  try {
+    conn.pc.restartIce();
+    const offer = await conn.pc.createOffer({ iceRestart: true });
+    await conn.pc.setLocalDescription(offer);
+    signal(makeSignal("offer", peerId, conn.pc.localDescription.toJSON()));
+    log(t("log.iceRestart", { peer: peerLabel(peerId), attempt: conn.iceRestarts }), "warn");
+    // If it is still down a few seconds later, try again (up to the cap).
+    scheduleIceRestart(peerId, 6000);
+  } catch (e) {
+    log(t("log.iceRestartFailed", { peer: peerLabel(peerId), message: e.message }), "warn");
+  }
+}
+
+// Log candidate type/family without showing or storing the address.
+function noteLocalCandidate(peerId, conn, c) {
+  const parts = (c.candidate || "").split(" ");
+  const addr = parts[4] || "";
+  const type = parts[7] || "?";
+  let family = "unknown";
+  if (addr.endsWith(".local")) family = "mDNS";
+  else if (addr.includes(":")) family = "IPv6";
+  else if (/^\d+\.\d+\.\d+\.\d+$/.test(addr)) family = "IPv4";
+  const key = `${family} ${type}`;
+  conn.candCounts.local[key] = (conn.candCounts.local[key] || 0) + 1;
+  conn.candCounts.total++;
+  // Remember what we gathered, both to explain failures and to track IPv6:
+  // server-reflexive means a real, publicly reachable path; host-only usually
+  // means the firewall blocks inbound.
+  const g = conn.gathered;
+  if (type === "srflx") g.srflx = true;
+  else if (type === "host") g.host = true;
+  else if (type === "relay") g.relay = true;
+  if (family === "mDNS") g.mdns = true;
+  if (family === "IPv6") {
+    if (type === "srflx") g.srflx6 = true;
+    else if (type === "host") g.host6 = true;
+  }
+  if (peerId === focusedId) {
+    setField("dCands", Object.entries(conn.candCounts.local).map(([k, v]) => `${k} \u00d7${v}`).join(", "));
+  }
+  log(t("log.localCandidate", { peer: peerLabel(peerId), family, type, proto: parts[2] || "?" }));
+}
+
+// Raise the negotiated Opus bitrate/stereo by editing the offer's fmtp line.
+// Merges with the parameters the browser already set (e.g. minptime) so the
+// existing Opus settings survive.
+function preferOpus(sdp) {
+  if (!sdp) return sdp;
+  const rm = sdp.match(/a=rtpmap:(\d+) opus\/48000/i);
+  if (!rm) return sdp;
+  const pt = rm[1];
+  const fmtpRe = new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`);
+  const existing = sdp.match(fmtpRe);
+  const params = new Map();
+  if (existing) {
+    for (const kv of existing[1].split(";")) {
+      const [k, v] = kv.split("=");
+      if (k && k.trim()) params.set(k.trim(), (v || "").trim());
+    }
+  }
+  params.set("maxaveragebitrate", String(OPUS_MAX_BITRATE));
+  // In-band FEC lets audio survive packet loss (common on Wi-Fi), and DTX stops
+  // sending during silence, which matters when each viewer is its own stream.
+  params.set("useinbandfec", "1");
+  params.set("usedtx", "1");
+  if (OPUS_STEREO) {
+    params.set("stereo", "1");
+    params.set("sprop-stereo", "1");
+  }
+  const line = `a=fmtp:${pt} ` + [...params].map(([k, v]) => (v ? `${k}=${v}` : k)).join(";");
+  if (existing) return sdp.replace(fmtpRe, line);
+  return sdp.replace(new RegExp(`(a=rtpmap:${pt} opus\\/48000[^\\r\\n]*)`), `$1\r\n${line}`);
+}
+
+// Streamer: create and send an offer for one viewer.
+async function startOffer(peerId) {
+  if (!localStream) {
+    log(t("log.offerSkippedNoStream"), "warn");
+    return;
+  }
+  const conn = createPc(peerId);
+  const track = localStream.getVideoTracks()[0];
+  const tr = conn.pc.addTransceiver(track, { direction: "sendonly", streams: [localStream] });
+  applyCodecPreferences(tr, "sender");
+  await applyQualityToSender(tr.sender, qualityKeyFor(peerId));
+  // Screen/tab audio rides along on its own transceiver; leave it on the
+  // browser's default codec (Opus) rather than the video AV1 preference.
+  const audioTrack = localStream.getAudioTracks()[0];
+  if (audioTrack) conn.pc.addTransceiver(audioTrack, { direction: "sendonly", streams: [localStream] });
+  const offer = await conn.pc.createOffer();
+  if (audioTrack) offer.sdp = preferOpus(offer.sdp);
+  await conn.pc.setLocalDescription(offer);
+  signal(makeSignal("offer", peerId, conn.pc.localDescription.toJSON()));
+  log(t("log.offerSent", { peer: peerLabel(peerId), media: t(audioTrack ? "media.videoAudio" : "media.videoOnly") }));
+}
+
+// Viewer: answer the streamer's offer. A new offer on a live connection is a
+// renegotiation (ICE restart), so reuse the peer connection instead of tearing
+// it down — playback recovers without rebuilding from scratch. A presenter
+// handoff is the exception: the offer then comes from a different browser, whose
+// ICE credentials and DTLS fingerprint the old connection cannot adopt, so it is
+// rebuilt.
+async function handleOffer(offer) {
+  const existing = conns.get(VIEWER_KEY);
+  const reuse = existing && existing.pc && existing.pc.signalingState !== "closed" && !streamerRebuild;
+  streamerRebuild = false;
+  const conn = reuse ? existing : createPc(VIEWER_KEY);
+  await conn.pc.setRemoteDescription(offer);
+  await flushCandidates(conn);
+  const tr = conn.pc.getTransceivers().find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === "video");
+  applyCodecPreferences(tr, "receiver");
+  const answer = await conn.pc.createAnswer();
+  await conn.pc.setLocalDescription(answer);
+  signal(makeSignal("answer", VIEWER_KEY, conn.pc.localDescription.toJSON()));
+  log(t("log.answerSent"));
+}
+
+async function handleAnswer(peerId, answer) {
+  const conn = conns.get(peerId);
+  if (!conn) return;
+  await conn.pc.setRemoteDescription(answer);
+  await flushCandidates(conn);
+  log(t("log.answerReceived", { peer: peerLabel(peerId) }));
+}
+
+// The payload is a single candidate, a legacy null end-of-candidates marker, or
+// a batch { candidates: [...], end } from the sender's coalescing flush.
+async function handleRemoteCandidate(peerId, payload) {
+  const conn = conns.get(peerId);
+  if (!conn) return;
+  const candidates = payload && Array.isArray(payload.candidates) ? payload.candidates : [payload];
+  for (const cand of candidates) {
+    if (!conn.pc.remoteDescription) conn.pending.push(cand);
+    else await addCandidate(conn, cand);
+  }
+  if (payload && payload.end) {
+    // Queue the end marker too when there is no description yet, so it lands in
+    // order after the candidates already queued.
+    if (!conn.pc.remoteDescription) conn.pending.push(null);
+    else await addCandidate(conn, null);
+  }
+}
+
+async function addCandidate(conn, cand) {
+  try {
+    await conn.pc.addIceCandidate(cand || undefined);
+  } catch (e) {
+    log(t("log.addCandidateFailed", { message: e.message }), "warn");
+  }
+}
+
+async function flushCandidates(conn) {
+  const queued = conn.pending;
+  conn.pending = [];
+  for (const c of queued) await addCandidate(conn, c);
+}
+
+// ---------- Stats ----------
+
+function startStats() {
+  if (statsTimer) return;
+  statsTimer = setInterval(pollStats, 1000);
+}
+
+function stopStats() {
+  if (statsTimer) clearInterval(statsTimer);
+  statsTimer = null;
+}
+
+function describeFamily(c) {
+  const addr = (c && (c.address || c.ip)) || "";
+  if (!addr) return "unknown";
+  if (addr.endsWith(".local")) return "mDNS";
+  if (addr.includes(":")) return "IPv6";
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(addr)) return "IPv4";
+  return "unknown";
+}
+
+async function pollStats() {
+  for (const [peerId, conn] of conns) {
+    let stats;
+    try { stats = await conn.pc.getStats(); } catch { continue; }
+    collectStats(peerId, conn, stats);
+  }
+  renderFocused();
+}
+
+// Turn a getStats() report into a display object stored on the connection.
+function collectStats(peerId, conn, stats) {
+  const d = {};
+  const byId = new Map();
+  let selectedPairId = null;
+  stats.forEach((r) => {
+    byId.set(r.id, r);
+    if (r.type === "transport" && r.selectedCandidatePairId) selectedPairId = r.selectedCandidatePairId;
+  });
+
+  let pair = selectedPairId ? byId.get(selectedPairId) : null;
+  if (!pair) {
+    stats.forEach((r) => {
+      if (r.type === "candidate-pair" && (r.selected || (r.nominated && r.state === "succeeded"))) pair = r;
+    });
+  }
+
+  if (pair) {
+    const local = byId.get(pair.localCandidateId);
+    const remote = byId.get(pair.remoteCandidateId);
+    const lf = describeFamily(local), rf = describeFamily(remote);
+    const lt = local ? local.candidateType : "?", rt = remote ? remote.candidateType : "?";
+    const proto = local && local.protocol ? local.protocol.toUpperCase() : "";
+    d.pair = `${t("pair.local")}: ${lf} ${lt} \u00b7 ${t("pair.remote")}: ${rf} ${rt}${proto ? " \u00b7 " + proto : ""}`;
+
+    const relayed = lt === "relay" || rt === "relay";
+    if (relayed) {
+      d.path = t("path.relayed");
+      d.pathCls = "bad";
+    } else {
+      let fam = "";
+      if (lf === "IPv6" && rf === "IPv6") fam = t("path.overIpv6");
+      else if (lf === "IPv4" && rf === "IPv4") fam = t("path.overIpv4");
+      else if (lf === "unknown" || rf === "unknown" || lf === "mDNS" || rf === "mDNS") fam = t("path.familyHidden");
+      d.path = t("path.direct") + fam;
+      d.pathCls = lf === "IPv6" && rf === "IPv6" ? "ok" : "";
+    }
+    if (typeof pair.currentRoundTripTime === "number") {
+      d.rtt = `${Math.round(pair.currentRoundTripTime * 1000)} ms`;
+    }
+  }
+
+  // Whether this browser actually gathered an IPv6 server-reflexive candidate
+  // for this connection. "srflx" is the useful one (a public, reachable IPv6);
+  // host-only IPv6 usually means the router/OS firewall is dropping inbound.
+  if (conn.gathered.srflx6) {
+    d.ipv6 = t("ipv6.srflx");
+    d.ipv6Cls = "ok";
+  } else if (conn.gathered.host6) {
+    d.ipv6 = t("ipv6.hostOnly");
+    d.ipv6Cls = "warn";
+  } else {
+    d.ipv6 = t("ipv6.none");
+    d.ipv6Cls = "";
+  }
+
+  // Audio stats (best-effort; absent when no audio is being shared).
+  const audioRtpType = ROLE === "streamer" ? "outbound-rtp" : "inbound-rtp";
+  let audioRtp = null;
+  stats.forEach((r) => {
+    if (r.type === audioRtpType && (r.kind || r.mediaType) === "audio") audioRtp = r;
+  });
+  if (audioRtp) {
+    const acodec = audioRtp.codecId ? byId.get(audioRtp.codecId) : null;
+    if (acodec) {
+      const isOpus = acodec.mimeType.toLowerCase() === "audio/opus";
+      d.audioCodec = acodec.mimeType;
+      d.audioCodecCls = isOpus ? "ok" : "";
+    }
+    const abytes = ROLE === "streamer" ? audioRtp.bytesSent : audioRtp.bytesReceived;
+    if (typeof abytes === "number" && typeof audioRtp.timestamp === "number") {
+      if (conn.prevAudioBytes && audioRtp.timestamp > conn.prevAudioBytes.ts) {
+        const abps = ((abytes - conn.prevAudioBytes.bytes) * 8) / ((audioRtp.timestamp - conn.prevAudioBytes.ts) / 1000);
+        d.audioBitrate = `${(abps / 1e3).toFixed(0)} kbps`;
+      }
+      conn.prevAudioBytes = { bytes: abytes, ts: audioRtp.timestamp };
+    }
+  }
+
+  // Pick the active video RTP stream (outbound for streamer, inbound for viewer).
+  const rtpType = ROLE === "streamer" ? "outbound-rtp" : "inbound-rtp";
+  let rtp = null;
+  stats.forEach((r) => {
+    if (r.type === rtpType && (r.kind || r.mediaType) === "video") {
+      if (!rtp || (r.bytesSent || r.bytesReceived || 0) > (rtp.bytesSent || rtp.bytesReceived || 0)) rtp = r;
+    }
+  });
+  if (!rtp) { conn.display = d; return; }
+
+  const codec = rtp.codecId ? byId.get(rtp.codecId) : null;
+  if (codec) {
+    const mime = codec.mimeType;
+    const isAv1 = mime.toLowerCase() === "video/av1";
+    d.codec = mime;
+    d.codecCls = isAv1 ? "ok" : "warn";
+    if (!isAv1 && $("preferAv1").checked && !conn.warnedCodec) {
+      conn.warnedCodec = true;
+      log(t("log.codecNotAv1", { peer: peerLabel(peerId), mime }), "warn");
+      if (peerId === focusedId) {
+        showAlert(t("alert.av1Fallback", { mime }), "warn");
+      }
+    }
+    if (isAv1 && !conn.warnedCodec) {
+      conn.warnedCodec = true;
+      log(t("log.codecIsAv1", { peer: peerLabel(peerId) }), "ok");
+    }
+  }
+
+  if (rtp.frameWidth && rtp.frameHeight) d.res = `${rtp.frameWidth}\u00d7${rtp.frameHeight}`;
+  if (typeof rtp.framesPerSecond === "number") d.fps = `${Math.round(rtp.framesPerSecond)} fps`;
+
+  const impl = ROLE === "streamer" ? rtp.encoderImplementation : rtp.decoderImplementation;
+  if (impl) d.impl = `${impl}${rtp.powerEfficientEncoder || rtp.powerEfficientDecoder ? t("diag.implPowerEfficient") : ""}`;
+
+  // Why the encoder is limiting quality. Streamer-only: the value says whether
+  // the drop is CPU-bound or bandwidth-bound, which raw fps/bitrate cannot.
+  if (ROLE === "streamer" && rtp.qualityLimitationReason) {
+    const reason = rtp.qualityLimitationReason;
+    d.limit = t(reason === "bandwidth" ? "limit.bandwidth" : reason === "cpu" ? "limit.cpu" : reason === "none" ? "limit.none" : "limit.other");
+    d.limitCls = reason === "none" ? "ok" : "warn";
+  }
+
+  const bytes = ROLE === "streamer" ? rtp.bytesSent : rtp.bytesReceived;
+  conn.bitrateBps = 0;
+  if (typeof bytes === "number") {
+    if (conn.prevBytes && rtp.timestamp > conn.prevBytes.ts) {
+      const bps = ((bytes - conn.prevBytes.bytes) * 8) / ((rtp.timestamp - conn.prevBytes.ts) / 1000);
+      d.bitrate = `${(bps / 1e6).toFixed(2)} Mbps`;
+      conn.bitrateBps = bps;
+    }
+    conn.prevBytes = { bytes, ts: rtp.timestamp };
+  }
+
+  // Packet loss and jitter. A viewer reads its inbound-rtp; a streamer reads the
+  // receiver's remote-inbound-rtp report, which is the viewer's point of view.
+  // Loss is the best early signal that a "connected" stream will still look bad.
+  let recv = null;
+  if (ROLE === "viewer") {
+    recv = rtp; // inbound-rtp
+  } else {
+    stats.forEach((r) => {
+      if (r.type === "remote-inbound-rtp" && (r.kind || r.mediaType) === "video") recv = r;
+    });
+  }
+  if (recv) {
+    const lost = recv.packetsLost;
+    const total = ROLE === "viewer" ? (lost || 0) + (recv.packetsReceived || 0) : rtp.packetsSent;
+    if (typeof lost === "number" && typeof total === "number" && total > 0) {
+      const pct = (lost / total) * 100;
+      d.loss = `${pct.toFixed(1)}%`;
+      d.lossCls = pct >= 5 ? "bad" : pct >= 1 ? "warn" : "ok";
+    }
+    if (typeof recv.jitter === "number") {
+      const jms = recv.jitter * 1000;
+      d.jitter = `${Math.round(jms)} ms`;
+      d.jitterCls = jms >= 100 ? "warn" : "";
+    }
+  }
+
+  // Freezes/stalls are only reported by the receiving side.
+  if (ROLE === "viewer" && typeof rtp.freezeCount === "number") {
+    const secs = typeof rtp.totalFreezesDuration === "number" ? rtp.totalFreezesDuration : 0;
+    d.freeze = `${rtp.freezeCount}\u00d7${secs ? ` \u00b7 ${secs.toFixed(1)}s` : ""}`;
+    d.freezeCls = rtp.freezeCount > 0 ? "warn" : "";
+  }
+
+  conn.display = d;
+}
+
+function renderFocused() {
+  const conn = focusedId ? conns.get(focusedId) : null;
+  const d = conn && conn.display;
+  if (d) {
+    setField("dPair", d.pair || "\u2013");
+    setField("dPath", d.path || "\u2013", d.pathCls || "");
+    setField("dIpv6", d.ipv6 || "\u2013", d.ipv6Cls || "");
+    setField("dRtt", d.rtt || "\u2013");
+    setField("dLoss", d.loss || "\u2013", d.lossCls || "");
+    setField("dJitter", d.jitter || "\u2013", d.jitterCls || "");
+    setField("dFreeze", d.freeze || "\u2013", d.freezeCls || "");
+    setField("dCodec", d.codec || "\u2013", d.codecCls || "");
+    setField("dRes", d.res || "\u2013");
+    setField("dFps", d.fps || "\u2013");
+    setField("dLimit", d.limit || "\u2013", d.limitCls || "");
+    setField("dBitrate", d.bitrate || "\u2013");
+    setField("dAudioCodec", d.audioCodec || "\u2013", d.audioCodecCls || "");
+    setField("dAudioBitrate", d.audioBitrate || "\u2013");
+    setField("dImpl", d.impl || "\u2013");
+    setField("dCands", conn.candCounts.total
+      ? Object.entries(conn.candCounts.local).map(([k, v]) => `${k} \u00d7${v}`).join(", ")
+      : "\u2013");
+  } else {
+    resetStatValues();
+  }
+
+  // Streamer: total upload actually leaving the machine (one encoder per viewer)
+  // is what decides how many viewers fit before the connection saturates.
+  if (ROLE === "streamer") {
+    let totalBps = 0;
+    for (const c of conns.values()) totalBps += c.bitrateBps || 0;
+    const mbps = totalBps / 1e6;
+    setField("dUpload", conns.size ? `${mbps.toFixed(2)} Mbps \u00b7 ${conns.size}` : "\u2013", mbps >= UPLOAD_WARN_MBPS ? "warn" : "");
+    if (conns.size === 0) {
+      uploadWarned = false;
+    } else if (mbps >= UPLOAD_WARN_MBPS && !uploadWarned) {
+      uploadWarned = true;
+      log(t("log.uploadHigh", { mbps: mbps.toFixed(0), count: conns.size }), "warn");
+    }
+  }
+}
+
+// Build a plain-text snapshot of the diagnostics panel and the log, so a host or
+// viewer can paste an exact report instead of describing the problem.
+function diagnosticsText() {
+  const lines = [];
+  lines.push("Golive diagnostics");
+  lines.push(`time: ${new Date().toISOString()}`);
+  lines.push(`role: ${ROLE}`);
+  lines.push(`room: ${roomId || roomFromUrl || "-"}`);
+  lines.push(`focused: ${focusedId || "-"}`);
+  lines.push(`ua: ${navigator.userAgent}`);
+  for (const [id, v] of Object.entries(diag)) lines.push(`${id}: ${v.text}`);
+  const logText = opts.getLogText ? opts.getLogText() : "";
+  if (logText && logText.trim()) {
+    lines.push("--- log ---");
+    lines.push(logText.trim());
+  }
+  return lines.join("\n");
+}
+
+// ---------- Streamer / viewer flows ----------
+
+function showRoomLink() {
+  const url = `${location.origin}/watch/${roomId}`;
+  $("roomUrl").value = url;
+  $("linkRow").hidden = false;
+}
+
+// Viewer placeholder while no streamer is connected. The signaling socket
+// stays open, so playback starts automatically when the streamer arrives.
+function showWaiting() {
+  if (ROLE !== "viewer") return;
+  postState("waiting");
+  state("waiting");
+  $("video").srcObject = null;
+  setVideoActive(false, true);
+  checkAudioHint();
+}
+
+// Viewer: cover the player with a PIN prompt when the room requires one. The
+// gate replaces the "waiting" placeholder (it is opaque) instead of stacking
+// above it, and `wrong` shows the retry line after a rejected PIN.
+function showPinGate(show, wrong = false) {
+  const gate = $("pinGate");
+  if (!gate) return;
+  gate.hidden = !show;
+  if (!show) return;
+  const inputEl = $("pinInput");
+  inputEl.value = "";
+  $("pinError").hidden = !wrong;
+  showWaiting();
+  inputEl.focus();
+}
+
+function randomRoomId() {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let id = "";
+  for (const b of bytes) id += alphabet[b % alphabet.length];
+  return id;
+}
+
+// Resolve the streamer's room ID: the typed value, or a fresh random one when
+// left blank. Returns null (with an alert) when the typed value is invalid.
+function resolveRoomId() {
+  const input = $("roomId");
+  let id = (input.value || "").trim().toLowerCase();
+  if (!id) {
+    id = randomRoomId();
+    input.value = id;
+  }
+  if (!ROOM_ID_RE.test(id)) {
+    log(t("log.roomIdInvalid", { id }), "bad");
+    showAlert(t("alert.roomIdInvalid"), "bad");
+    return null;
+  }
+  return id;
+}
+
+// Capture the display. Audio is best-effort and depends on the browser, OS and
+// the source the user picks (tabs carry tab audio; screens can carry system
+// audio; a window carries only its own audio where the browser supports
+// "windowAudio"). The systemAudio/windowAudio hints below tell Chrome which
+// audio to offer for each source; other browsers ignore unknown options.
+// A real denial/cancel is still surfaced as an error.
+async function getDisplayStream(fps, wantAudio) {
+  const video = { frameRate: fps };
+  if (!wantAudio) return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
+  try {
+    return await navigator.mediaDevices.getDisplayMedia({
+      video,
+      audio: true,
+      systemAudio: "include", // offer system audio (screens) where possible
+      windowAudio: "window",  // window shares: only the picked window's audio
+    });
+  } catch (e) {
+    if (e && (e.name === "TypeError" || e.name === "NotSupportedError")) {
+      log(t("log.audioRejected", { name: e.name }), "warn");
+      return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
+    }
+    throw e;
+  }
+}
+
+async function startSharing() {
+  $("startBtn").disabled = true;
+  const id = resolveRoomId();
+  if (!id) { $("startBtn").disabled = false; return; }
+  roomId = id;
+  try { localStorage.setItem(ROOM_STORAGE_KEY, id); } catch { /* storage unavailable */ }
+  if (opts.onRoom) opts.onRoom(id);
+
+  // Optional room PIN: read and validate it before capturing so a bad value
+  // fails fast, and remember it for the next visit.
+  const pinField = $("roomPin");
+  const pinVal = pinField ? pinField.value.trim() : "";
+  if (pinVal && !PIN_RE.test(pinVal)) {
+    showAlert(t("alert.pinInvalid"), "bad");
+    $("startBtn").disabled = false;
+    return;
+  }
+  roomPin = pinVal;
+  savePrefs({ pin: pinVal });
+
+  const wantAudio = $("shareAudio").checked;
+  const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
+  const fps = preset.captureFps || 60;
+  try {
+    localStream = await getDisplayStream(fps, wantAudio);
+  } catch (e) {
+    log(t("log.captureFailed", { name: e.name, message: e.message }), "bad");
+    showAlert(
+      window.isSecureContext ? t("alert.captureDenied") : t("alert.captureInsecure"),
+      "bad"
+    );
+    $("startBtn").disabled = false;
+    return;
+  }
+  const audioTracks = localStream.getAudioTracks();
+  if (wantAudio && audioTracks.length === 0) {
+    log(t("log.noAudioTrack"), "warn");
+  } else if (audioTracks.length) {
+    log(t("log.audioEnabled", { fps }));
+  } else {
+    log(t("log.videoOnly", { fps }));
+  }
+  log(t("log.qualityPreset", { label: presetLabel() }));
+  const videoTrack = localStream.getVideoTracks()[0];
+  // Hint the encoder what this content is (from the preset): screen content is
+  // mostly static text/UI, which "text" keeps sharp (falling back to "detail"),
+  // while the bandwidth-tight presets trade sharpness for smoothness with
+  // "motion". Browsers that don't support a hint ignore it.
+  applyContentHint(videoTrack, preset.contentHint);
+  const video = $("video");
+  video.srcObject = localStream;
+  video.muted = true;
+  setVideoActive(true);
+  videoTrack.addEventListener("ended", () => {
+    log(t("log.captureEnded"), "warn");
+    stopSharing();
+  });
+  $("stopBtn").disabled = false;
+  $("preferAv1").disabled = true;
+  $("shareAudio").disabled = true;
+  $("roomId").disabled = true;
+  if (pinField) pinField.disabled = true;
+  setField("dQuality", presetLabel());
+  if (roomPin) log(t("log.pinSet"));
+  requestWakeLock();
+  try {
+    await connectSignaling(roomId, "streamer");
+  } catch (e) {
+    log(e.message, "bad");
+    showAlert(e.message, "bad");
+    stopSharing();
+    return;
+  }
+}
+
+function stopSharing() {
+  closeAllConns();
+  releaseWakeLock();
+  if (localStream) {
+    localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+  }
+  stopReconnecting();
+  if (ws) {
+    ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null;
+    ws.close();
+    ws = null;
+  }
+  $("video").srcObject = null;
+  setVideoActive(false);
+  checkAudioHint();
+  $("linkRow").hidden = true;
+  $("startBtn").disabled = false;
+  $("stopBtn").disabled = true;
+  $("preferAv1").disabled = false;
+  $("shareAudio").disabled = false;
+  $("roomId").disabled = false;
+  if ($("roomPin")) $("roomPin").disabled = false;
+  setField("dSignaling", t("signal.idle"));
+  resetStatsFields();
+  state("idle");
+  log(t("log.sharingStopped"));
+}
+
+async function joinRoom() {
+  requestWakeLock();
+  showWaiting();
+  try {
+    await connectSignaling(roomFromUrl, "viewer");
+  } catch (e) {
+    // The close handler schedules a retry; the room may just not exist yet.
+    log(t("log.retrying", { message: e.message }), "warn");
+  }
+}
+
+// ---------- Presenter handoff ----------
+
+// Which chrome a host shows vs. a viewer. Split out of init so a handoff can
+// flip roles in place, without a reload (screen capture needs a user gesture, so
+// the new presenter cannot be established by reloading the page).
+function applyStreamerUI() {
+  if (PANEL) PANEL.querySelectorAll(".streamer-only").forEach((el) => { el.hidden = false; });
+  $("startBtn").hidden = false;
+  $("stopBtn").hidden = false;
+  $("viewerControls").hidden = true;
+  const pref = $("preferAv1");
+  if (pref) {
+    const wrap = pref.closest(".check-pill, label");
+    if (wrap) wrap.hidden = false;
+  }
+  for (const id of STREAMER_STAT_FIELDS) { const el = $(id); if (el) el.hidden = false; }
+  setField("dQuality", presetLabel());
+  updatePeerSelect();
+  updateViewerCount();
+}
+
+function applyViewerUI() {
+  if (PANEL) PANEL.querySelectorAll(".streamer-only").forEach((el) => { el.hidden = true; });
+  $("startBtn").hidden = true;
+  $("stopBtn").hidden = true;
+  $("viewerControls").hidden = false;
+  const pref = $("preferAv1");
+  if (pref) {
+    const wrap = pref.closest(".check-pill, label");
+    if (wrap) wrap.hidden = true;
+  }
+  for (const id of STREAMER_STAT_FIELDS) { const el = $(id); if (el) el.hidden = true; }
+  updatePeerQuality();
+}
+
+// Picture-in-picture, only where the browser supports it. Wired once; the
+// enclosing viewer controls are shown or hidden with the role.
+function setupPip() {
+  const videoEl = $("video");
+  if (typeof videoEl.requestPictureInPicture !== "function" || !document.pictureInPictureEnabled) {
+    $("pipBtn").hidden = true;
+    return;
+  }
+  $("pipBtn").addEventListener("click", async () => {
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await videoEl.requestPictureInPicture();
+    } catch { /* not allowed until a video is playing */ }
+  });
+  videoEl.addEventListener("enterpictureinpicture", () => { $("pipLabel").textContent = t("app.exitPip"); });
+  videoEl.addEventListener("leavepictureinpicture", () => { $("pipLabel").textContent = t("app.pip"); });
+}
+
+// "Take the stage" is only offered while a streamer is around to answer it.
+function setTakeStageAvailable(on) {
+  const btn = $("takeStageBtn");
+  if (!btn || ROLE !== "viewer") return;
+  btn.hidden = !on;
+}
+
+// Viewer: ask to present. The screen is captured here, from the click (capture
+// cannot be triggered remotely), and the stream waits until the host answers.
+async function requestStage() {
+  if (ROLE !== "viewer" || stageRequest) return;
+  const btn = $("takeStageBtn");
+  if (btn) btn.disabled = true;
+  const prefs = loadPrefs();
+  const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
+  let stream;
+  try {
+    stream = await getDisplayStream(preset.captureFps || 60, prefs.shareAudio !== false);
+  } catch (e) {
+    log(t("log.captureFailed", { name: e.name, message: e.message }), "bad");
+    showAlert(window.isSecureContext ? t("alert.captureDenied") : t("alert.captureInsecure"), "bad");
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (btn) btn.disabled = false;
+  stageRequest = {
+    stream,
+    timer: setTimeout(() => {
+      log(t("log.stageTimeout"), "warn");
+      cancelStageRequest();
+      showAlert(t("alert.stageTimeout"), "warn");
+    }, STAGE_REQUEST_TIMEOUT_MS),
+  };
+  log(t("log.stageAsked"));
+  showAlert(t("alert.stageRequested"), "warn");
+  signal({ type: "handoff-request" });
+}
+
+// Drop a pending request and its captured tracks (denied, timed out, gone).
+function cancelStageRequest() {
+  if (!stageRequest) return;
+  clearTimeout(stageRequest.timer);
+  stageRequest.stream.getTracks().forEach((tr) => tr.stop());
+  stageRequest = null;
+}
+
+// Streamer: a viewer is waiting for an answer.
+function showHandoffPrompt(peerId) {
+  if (ROLE !== "streamer") return;
+  pendingHandoffFrom = peerId;
+  $("handoffText").textContent = t("alert.handoffAsk", { peer: peerLabel(peerId) });
+  $("handoffPrompt").hidden = false;
+  $("handoffAccept").focus();
+}
+
+function hideHandoffPrompt() {
+  pendingHandoffFrom = null;
+  const prompt = $("handoffPrompt");
+  if (prompt) prompt.hidden = true;
+}
+
+// Streamer: hand the stage over. The grant goes first, because the room needs it
+// to free the seat; then sharing stops and this tab re-joins the same room as a
+// viewer, so the host keeps watching.
+async function grantStage() {
+  const target = pendingHandoffFrom;
+  hideHandoffPrompt();
+  if (!target) return;
+  const room = roomId || roomFromUrl;
+  signal({ type: "handoff-grant", to: target });
+  log(t("log.stageGranted", { peer: peerLabel(target) }));
+  stopSharing();
+  if (room) await demoteToViewer(room);
+}
+
+function declineStage() {
+  const target = pendingHandoffFrom;
+  hideHandoffPrompt();
+  if (!target) return;
+  signal({ type: "handoff-deny", to: target });
+  log(t("log.stageDeclined", { peer: peerLabel(target) }));
+}
+
+// Viewer: the host agreed. Promote this tab and publish the stream captured when
+// the request was made.
+async function acceptStage() {
+  const pending = stageRequest;
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  stageRequest = null;
+  const room = signalingRoom || roomFromUrl;
+  if (!room) {
+    pending.stream.getTracks().forEach((tr) => tr.stop());
+    return;
+  }
+  await becomeStreamer(pending.stream, room);
+}
+
+async function becomeStreamer(stream, room) {
+  closeAllConns(); // drop the viewer-side connection to the old presenter
+  ROLE = "streamer";
+  roomFromUrl = room;
+  roomId = room;
+  if (opts.onRoom) opts.onRoom(room);
+  localStream = stream;
+  $("roomId").value = room;
+  $("roomId").disabled = true;
+  $("preferAv1").disabled = true;
+  $("shareAudio").disabled = true;
+  $("startBtn").disabled = true;
+  $("stopBtn").disabled = false;
+  const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (videoTrack) {
+    applyContentHint(videoTrack, preset.contentHint);
+    videoTrack.addEventListener("ended", () => {
+      log(t("log.captureEnded"), "warn");
+      stopSharing();
+    });
+  }
+  const video = $("video");
+  video.srcObject = localStream;
+  video.muted = true;
+  setVideoActive(true);
+  applyStreamerUI();
+  const roleEl = $("role");
+  if (roleEl) roleEl.textContent = t("role.host");
+  const subtitle = $("subtitle");
+  if (subtitle) subtitle.textContent = t("sub.host");
+  showRoomLink();
+  requestWakeLock();
+  clearAlert();
+  hideHandoffPrompt();
+  log(t("log.becameStreamer", { room }));
+  // The viewer socket has to go first: leaving it open would register this tab as
+  // a viewer of the room it is about to present to.
+  dropSignalingSocket();
+  try {
+    await connectSignaling(room, "streamer");
+  } catch (e) {
+    log(e.message, "bad");
+    showAlert(e.message, "bad");
+    stopSharing();
+    await demoteToViewer(room);
+  }
+}
+
+// The old presenter keeps watching the room it just handed over — same link, no
+// reload.
+async function demoteToViewer(room) {
+  ROLE = "viewer";
+  roomFromUrl = room;
+  applyViewerUI();
+  const roleEl = $("role");
+  if (roleEl) roleEl.textContent = t("role.viewer", { room });
+  const subtitle = $("subtitle");
+  if (subtitle) subtitle.textContent = t("sub.viewer");
+  setTakeStageAvailable(false);
+  showWaiting();
+  showAlert(t("alert.stageHandedOff"), "warn");
+  await joinRoom();
+}
+
+// Close the signaling socket without letting its close handler reconnect; used
+// while the same tab switches roles.
+function dropSignalingSocket() {
+  stopReconnecting();
+  if (!ws) return;
+  const old = ws;
+  ws = null;
+  old.onopen = old.onclose = old.onmessage = old.onerror = null;
+  try { old.close(); } catch { /* already closed */ }
+}
+
+// Keep the screen awake while a stream is live (hosting or watching) so a phone
+// or laptop does not sleep mid-session. The browser drops the lock when the tab
+// is hidden, so it is re-acquired when the tab becomes visible again.
+let wakeLock = null;
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator) || wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+    log(t("log.wakeLockOn"));
+  } catch { /* not allowed or the document is not visible */ }
+}
+
+function releaseWakeLock() {
+  if (!wakeLock) return;
+  try { wakeLock.release(); } catch { /* already released */ }
+  wakeLock = null;
+}
+
+// The shell re-acquires the wake lock on visibilitychange via onVisible().
+
+// ---------- Room view helpers ----------
+
+async function toggleFullscreen() {
+  const video = $("video");
+  const target = video && !video.hidden ? video : (PANEL && PANEL.querySelector(".video-wrap"));
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else if (target && target.requestFullscreen) await target.requestFullscreen();
+  } catch { /* not permitted */ }
+}
+
+async function togglePip() {
+  const video = $("video");
+  if (!video || typeof video.requestPictureInPicture !== "function" || !document.pictureInPictureEnabled) return;
+  try {
+    if (document.pictureInPictureElement) await document.exitPictureInPicture();
+    else await video.requestPictureInPicture();
+  } catch { /* not allowed until a video is playing */ }
+}
+
+// The streamer's preview is muted on purpose, so only viewers toggle sound.
+function toggleVideoMute() {
+  if (ROLE !== "viewer") return;
+  const video = $("video");
+  if (!video) return;
+  video.muted = !video.muted;
+  if (!video.muted && video.volume === 0) video.volume = 1;
+  syncVolumeUI();
+}
+
+// ---------- Init ----------
+
+function init() {
+  reportSupport();
+  // Start muted so autoplay is permitted; viewers opt into audio via the video
+  // controls' speaker icon. The host preview always stays muted, while a
+  // viewer's saved volume/mute is applied (unmuted is restored after playback).
+  applyAudioState($("video"), ROLE === "streamer" ? { volume: 1, muted: true } : loadAudioPrefs());
+  syncVolumeUI();
+  const peerSelect = $("peerSelect");
+  if (peerSelect) peerSelect.addEventListener("change", (e) => setFocused(e.target.value || null));
+  const reconnectBtn = $("reconnectBtn");
+  if (reconnectBtn) reconnectBtn.addEventListener("click", manualReconnect);
+  $("quality").addEventListener("change", async () => {
+    setField("dQuality", presetLabel());
+    updatePeerQuality();
+    const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
+    if (localStream && preset.captureFps) {
+      const vTrack = localStream.getVideoTracks()[0];
+      if (vTrack && typeof vTrack.applyConstraints === "function") {
+        try {
+          await vTrack.applyConstraints({ frameRate: preset.captureFps });
+        } catch { /* ignore constraint errors if browser can't re-constrain */ }
+      }
+      if (vTrack) applyContentHint(vTrack, preset.contentHint);
+    }
+    if (conns.size) {
+      log(t("log.qualityChanged", { label: presetLabel() }));
+      await applyQualityToAllSenders();
+    }
+  });
+  $("copyBtn").addEventListener("click", async () => {
+    const btn = $("copyBtn");
+    try {
+      await navigator.clipboard.writeText($("roomUrl").value);
+      log(t("log.linkCopied"));
+      const oldHtml = btn.innerHTML;
+      btn.innerHTML = `<svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg><span>${t("app.copied")}</span>`;
+      btn.classList.add("copied");
+      setTimeout(() => {
+        btn.innerHTML = oldHtml;
+        btn.classList.remove("copied");
+      }, 2000);
+    } catch {
+      $("roomUrl").select();
+      log(t("log.clipboardUnavailable"), "warn");
+    }
+  });
+
+  const roomLink = () => $("roomUrl").value;
+
+  const shareBtn = $("shareBtn");
+  if (shareBtn && typeof navigator.share === "function") {
+    shareBtn.hidden = false;
+    shareBtn.addEventListener("click", async () => {
+      try {
+        await navigator.share({ title: "Golive", text: t("share.text"), url: roomLink() });
+        log(t("log.linkShared"));
+      } catch { /* dismissed or unsupported */ }
+    });
+  }
+
+  const unmuteBtn = $("unmuteBtn");
+  if (unmuteBtn) {
+    unmuteBtn.addEventListener("click", () => {
+      const video = $("video");
+      video.muted = false;
+      if (video.volume === 0) video.volume = 1;
+      const hint = $("audioHint");
+      if (hint) hint.hidden = true;
+      syncVolumeUI();
+    });
+  }
+  const volSlider = $("volume");
+  if (volSlider) {
+    volSlider.addEventListener("input", () => {
+      const video = $("video");
+      video.volume = Number(volSlider.value);
+      // Dragging the slider up is an implicit request for sound.
+      if (video.volume > 0 && video.muted) video.muted = false;
+      syncVolumeUI();
+    });
+  }
+  const volMuteBtn = $("volMuteBtn");
+  if (volMuteBtn) {
+    volMuteBtn.addEventListener("click", () => {
+      const video = $("video");
+      video.muted = !video.muted;
+      if (!video.muted && video.volume === 0) video.volume = 1;
+      syncVolumeUI();
+    });
+  }
+  $("video").addEventListener("volumechange", () => {
+    const video = $("video");
+    if (video.volume !== audioState.volume || video.muted !== audioState.muted) {
+      audioState = { volume: video.volume, muted: video.muted };
+      // An embedded tile's mute state is the console's, not a saved preference.
+      if (!EMBED) saveAudioPrefs();
+    }
+    if (!video.muted) {
+      const hint = $("audioHint");
+      if (hint) hint.hidden = true;
+    } else {
+      checkAudioHint();
+    }
+    syncVolumeUI();
+  });
+
+  // Quality presets are built for both roles: a viewer handed the stage later
+  // needs the picker ready, and the room preset is what its senders will use.
+  const qsel = $("quality");
+  for (const [key, p] of Object.entries(QUALITY_PRESETS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = t(p.shortKey);
+    opt.title = t(p.labelKey);
+    qsel.appendChild(opt);
+  }
+  const prefs = loadPrefs();
+  qsel.value = QUALITY_PRESETS[prefs.quality] ? prefs.quality : "1080p60";
+  if (typeof prefs.preferAv1 === "boolean") $("preferAv1").checked = prefs.preferAv1;
+  if (typeof prefs.shareAudio === "boolean") $("shareAudio").checked = prefs.shareAudio;
+  qsel.addEventListener("change", () => savePrefs({ quality: qsel.value }));
+  $("preferAv1").addEventListener("change", () => savePrefs({ preferAv1: $("preferAv1").checked }));
+  $("shareAudio").addEventListener("change", () => savePrefs({ shareAudio: $("shareAudio").checked }));
+
+  // Optional room PIN (host). Digits only, remembered for the next visit.
+  const pinInput = $("roomPin");
+  if (pinInput) {
+    if (typeof prefs.pin === "string" && PIN_RE.test(prefs.pin)) pinInput.value = prefs.pin;
+    pinInput.addEventListener("input", () => {
+      const digits = pinInput.value.replace(/\D/g, "").slice(0, 8);
+      if (digits !== pinInput.value) pinInput.value = digits;
+    });
+    pinInput.addEventListener("change", () => savePrefs({ pin: pinInput.value }));
+  }
+
+  // Controls are wired for both roles; a handoff can flip them at runtime, and
+  // the ones that do not apply to a viewer stay hidden.
+  $("startBtn").addEventListener("click", startSharing);
+  $("stopBtn").addEventListener("click", stopSharing);
+  $("randomRoomBtn").addEventListener("click", () => {
+    $("roomId").value = randomRoomId();
+    clearAlert();
+  });
+  $("peerQualitySelect").addEventListener("change", async (e) => {
+    if (!focusedId) return;
+    const value = e.target.value;
+    if (QUALITY_PRESETS[value]) perViewerQuality.set(focusedId, value);
+    else perViewerQuality.delete(focusedId);
+    const key = qualityKeyFor(focusedId);
+    const conn = conns.get(focusedId);
+    if (conn) {
+      for (const sender of conn.pc.getSenders()) {
+        if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, key);
+      }
+    }
+    log(t("log.peerQuality", { peer: peerLabel(focusedId), label: presetLabel(key) }));
+  });
+  $("takeStageBtn").addEventListener("click", requestStage);
+  $("handoffAccept").addEventListener("click", grantStage);
+  $("handoffDecline").addEventListener("click", declineStage);
+
+  // PIN gate (viewer): submitting reconnects with the entered PIN.
+  $("pinForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const val = ($("pinInput").value || "").trim();
+    if (!PIN_RE.test(val)) {
+      $("pinError").hidden = false;
+      $("pinInput").focus();
+      return;
+    }
+    roomPin = val;
+    try { sessionStorage.setItem(PIN_SESSION_KEY, val); } catch { /* storage unavailable */ }
+    $("pinError").hidden = true;
+    showPinGate(false);
+    joinRoom();
+  });
+  $("pinInput").addEventListener("input", () => {
+    $("pinInput").value = $("pinInput").value.replace(/\D/g, "").slice(0, 8);
+    $("pinError").hidden = true;
+  });
+
+  setupPip();
+
+  if (ROLE === "streamer") {
+    // Remember the last room ID so the streamer keeps the same link.
+    let savedRoom = "";
+    try { savedRoom = localStorage.getItem(ROOM_STORAGE_KEY) || ""; } catch { /* storage unavailable */ }
+    if ($("roomId")) $("roomId").value = savedRoom;
+    setVideoActive(false);
+    applyStreamerUI();
+  } else {
+    setVideoActive(false, true);
+    applyViewerUI();
+    joinRoom();
+  }
+}
+
+init();
+
+// ---- Per-room API used by the shell ----------------------------------------
+return {
+  room: () => roomId || roomFromUrl || null,
+  role: () => ROLE,
+  isLive,
+  startSharing,
+  stopSharing,
+  joinRoom,
+  requestStage,
+  grantStage,
+  declineStage,
+  acceptStage,
+  toggleFullscreen,
+  togglePip,
+  toggleVideoMute,
+  diagnosticsText,
+  diag: () => diag,
+  isFocused: (peer) => focusedId === peer,
+  requestReconnect: manualReconnect,
+  // Re-acquire the wake lock when the tab becomes visible again.
+  onVisible() {
+    if (document.visibilityState === "visible" && isLive() && !wakeLock) requestWakeLock();
+  },
+  // The host can hand out this room's link.
+  roomUrl() {
+    const el = $("roomUrl");
+    if (el && el.value) return el.value;
+    const r = roomId || roomFromUrl || "";
+    return r ? `${location.origin}/watch/${r}` : location.origin;
+  },
+  destroy() {
+    releaseWakeLock();
+    stopReconnecting();
+    stopStats();
+    closeAllConns();
+    if (localStream) { localStream.getTracks().forEach((tr) => tr.stop()); localStream = null; }
+    if (ws) {
+      ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null;
+      try { ws.close(); } catch { /* already closed */ }
+      ws = null;
+    }
+  },
+};
+}

@@ -100,12 +100,12 @@ export default {
     if (path === "/") return serveShell(env, url, "/home.html", ogFor("home"));
 
     // Host console. The client decides its role from the path; "/host" has no
-    // room segment, so it is treated as a streamer.
+    // room segment, so it starts as a streamer panel.
     if (lower === "/host") return serveShell(env, url, "/index.html", ogFor("host"));
 
-    // Multistream console: several rooms side by side, each one an embedded
-    // viewer (/watch/<id>?embed=1) in its own iframe.
-    if (lower === "/squad") return serveShell(env, url, "/squad.html", ogFor("squad"));
+    // Multistream console: the same unified page, opening the rooms you saved
+    // last time. Each room is a native panel (no iframes).
+    if (lower === "/squad") return serveShell(env, url, "/index.html", ogFor("squad"));
 
     // Canonical viewer URL. Room IDs are lowercase; redirect a mixed-case path
     // to its canonical form.
