@@ -484,11 +484,24 @@ async function applyQualityToSender(sender, key) {
   }
 }
 
-// Streamer: apply to every viewer's video sender (on change, and for new joins).
+// Streamer: per-viewer quality. A viewer not listed here follows the room
+// preset; choosing one for a viewer only changes that viewer's sender, so a
+// single laggy peer can be dialed down without lowering the whole room. The
+// override lives as long as the viewer stays connected.
+const perViewerQuality = new Map();
+
+function qualityKeyFor(peerId) {
+  const override = perViewerQuality.get(peerId);
+  return override && QUALITY_PRESETS[override] ? override : currentPresetKey();
+}
+
+// Streamer: apply the room preset to every viewer's video sender, except the
+// viewers that carry an override (on change, and for new joins).
 async function applyQualityToAllSenders(key = currentPresetKey()) {
-  for (const conn of conns.values()) {
+  for (const [peerId, conn] of conns.entries()) {
+    const k = perViewerQuality.get(peerId) || key;
     for (const sender of conn.pc.getSenders()) {
-      if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, key);
+      if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, k);
     }
   }
 }
@@ -775,6 +788,7 @@ function closeConn(peerId) {
     try { pc.close(); } catch { /* already closed */ }
   }
   conns.delete(peerId);
+  perViewerQuality.delete(peerId);
   if (conns.size === 0) stopStats();
   if (focusedId === peerId) focusedId = conns.size ? conns.keys().next().value : null;
   updatePeerSelect();
@@ -844,6 +858,9 @@ function updateViewerCount() {
 function updatePeerSelect() {
   if (ROLE !== "streamer") return;
   const sel = $("peerSelect");
+  // Keep a viewer focused as soon as one is around, so the diagnostics panel and
+  // the per-viewer quality control have a target without a manual pick.
+  if (!focusedId && conns.size > 0) focusedId = conns.keys().next().value;
   sel.innerHTML = "";
   if (conns.size === 0) {
     const opt = document.createElement("option");
@@ -851,6 +868,7 @@ function updatePeerSelect() {
     opt.textContent = t("peer.none");
     sel.appendChild(opt);
     sel.disabled = true;
+    updatePeerQuality();
     return;
   }
   sel.disabled = false;
@@ -861,6 +879,36 @@ function updatePeerSelect() {
     if (peerId === focusedId) opt.selected = true;
     sel.appendChild(opt);
   }
+  updatePeerQuality();
+}
+
+// Streamer: the focused viewer's quality picker. The first entry ("follow the
+// room") clears the override; the rest pin that viewer to a preset.
+function updatePeerQuality() {
+  if (ROLE !== "streamer") return;
+  const label = $("dPeerQualityLabel");
+  const field = $("dPeerQuality");
+  const sel = $("peerQualitySelect");
+  if (!label || !field || !sel) return;
+  const show = !!focusedId && conns.size > 0;
+  label.hidden = !show;
+  field.hidden = !show;
+  if (!show) {
+    sel.innerHTML = "";
+    return;
+  }
+  sel.innerHTML = "";
+  const follow = document.createElement("option");
+  follow.value = "";
+  follow.textContent = t("diag.peerQualityFollow", { label: presetLabel() });
+  sel.appendChild(follow);
+  for (const key of Object.keys(QUALITY_PRESETS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = t(QUALITY_PRESETS[key].labelKey);
+    sel.appendChild(opt);
+  }
+  sel.value = perViewerQuality.get(focusedId) || "";
 }
 
 function setFocused(peerId) {
@@ -1137,7 +1185,7 @@ async function startOffer(peerId) {
   const track = localStream.getVideoTracks()[0];
   const tr = conn.pc.addTransceiver(track, { direction: "sendonly", streams: [localStream] });
   applyCodecPreferences(tr, "sender");
-  await applyQualityToSender(tr.sender, currentPresetKey());
+  await applyQualityToSender(tr.sender, qualityKeyFor(peerId));
   // Screen/tab audio rides along on its own transceiver; leave it on the
   // browser's default codec (Opus) rather than the video AV1 preference.
   const audioTrack = localStream.getAudioTracks()[0];
@@ -1787,6 +1835,7 @@ function init() {
   });
   $("quality").addEventListener("change", async () => {
     setField("dQuality", presetLabel());
+    updatePeerQuality();
     const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
     if (localStream && preset.captureFps) {
       const vTrack = localStream.getVideoTracks()[0];
@@ -1973,6 +2022,20 @@ function init() {
     $("dQualityLabel").hidden = false;
     $("dQuality").hidden = false;
     updatePeerSelect();
+    $("peerQualitySelect").addEventListener("change", async (e) => {
+      if (!focusedId) return;
+      const value = e.target.value;
+      if (QUALITY_PRESETS[value]) perViewerQuality.set(focusedId, value);
+      else perViewerQuality.delete(focusedId);
+      const key = qualityKeyFor(focusedId);
+      const conn = conns.get(focusedId);
+      if (conn) {
+        for (const sender of conn.pc.getSenders()) {
+          if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, key);
+        }
+      }
+      log(t("log.peerQuality", { peer: peerLabel(focusedId), label: presetLabel(key) }));
+    });
   } else {
     document.querySelectorAll(".streamer-only").forEach((el) => { el.hidden = true; });
     $("startBtn").hidden = true;

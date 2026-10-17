@@ -97,7 +97,12 @@ Before starting, the streamer chooses:
   `applyContentHint()`, which reads the value back and falls back to `"detail"`
   when a browser does not implement `"text"`; **Data saver** uses `"motion"` since
   it already prefers framerate. The chosen preset, **Prefer AV1** and **Share
-  audio** are remembered in `localStorage` for the next visit.
+  audio** are remembered in `localStorage` for the next visit. A viewer can also
+  be pinned to its own preset: the diagnostics panel's picker
+  (`perViewerQuality`) applies only to the focused viewer's sender, so one laggy
+  peer can be dialed down to 720p without lowering the room for everyone. The
+  override lasts as long as that viewer stays connected, and the rest follow the
+  room preset.
 
 ## Design notes
 
