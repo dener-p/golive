@@ -1372,6 +1372,29 @@ main.workspace {
 .add-bar input {
   flex: 1;
   max-width: 420px;
+  background: var(--panel-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.add-bar input::placeholder {
+  color: var(--muted);
+}
+
+.add-bar input:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.add-bar input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.2);
 }
 
 /* The grid of columns; splitters sit between them as flex items. */
@@ -1384,15 +1407,17 @@ main.workspace {
 .col {
   display: flex;
   flex-direction: column;
+  flex-basis: 0;
   min-width: 0;
   min-height: 0;
 }
 
 .split {
   position: relative;
-  flex: 0 0 12px;
+  flex: 0 0 14px;
   cursor: col-resize;
   touch-action: none;
+  border-radius: 4px;
 }
 
 .split-h {
@@ -1410,13 +1435,17 @@ main.workspace {
 }
 
 .split-v::after {
-  width: 3px;
-  height: 46%;
+  width: 4px;
+  height: 40%;
 }
 
 .split-h::after {
-  height: 3px;
-  width: 46%;
+  height: 4px;
+  width: 40%;
+}
+
+.split:hover {
+  background: rgba(79, 140, 255, 0.1);
 }
 
 .split:hover::after,
@@ -1424,10 +1453,29 @@ main.workspace {
   background: var(--accent);
 }
 
+body.dragging {
+  user-select: none;
+  cursor: col-resize;
+}
+
+body.dragging {
+  user-select: none;
+}
+
+body.dragging .split-v {
+  cursor: col-resize;
+}
+
+body.dragging .split-h {
+  cursor: row-resize;
+}
+
 /* Room panel */
 .room-panel {
   display: flex;
   flex-direction: column;
+  flex-basis: 0;
+  flex-shrink: 1;
   min-width: 0;
   min-height: 0;
   background: var(--panel);

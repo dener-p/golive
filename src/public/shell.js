@@ -39,7 +39,6 @@ function makeSplitV(a, b) {
   s.setAttribute("aria-orientation", "vertical");
   s.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    s.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     const total = columns.reduce((sum, c) => sum + c.weight, 0);
     const pxPer = grid.clientWidth / total || 1;
@@ -54,12 +53,14 @@ function makeSplitV(a, b) {
       applyCols();
     };
     const up = () => {
-      s.removeEventListener("pointermove", move);
-      s.removeEventListener("pointerup", up);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("dragging");
       saveLayout();
     };
-    s.addEventListener("pointermove", move);
-    s.addEventListener("pointerup", up);
+    document.body.classList.add("dragging");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   });
   return s;
 }
@@ -71,7 +72,6 @@ function makeSplitH(col, keyA, keyB) {
   s.setAttribute("aria-orientation", "horizontal");
   s.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    s.setPointerCapture(e.pointerId);
     setActive(keyA);
     const a = panels.get(keyA), b = panels.get(keyB);
     if (!a || !b) return;
@@ -89,12 +89,14 @@ function makeSplitH(col, keyA, keyB) {
       applyRows(col);
     };
     const up = () => {
-      s.removeEventListener("pointermove", move);
-      s.removeEventListener("pointerup", up);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("dragging");
       saveLayout();
     };
-    s.addEventListener("pointermove", move);
-    s.addEventListener("pointerup", up);
+    document.body.classList.add("dragging");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   });
   return s;
 }
