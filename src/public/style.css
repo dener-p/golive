@@ -396,6 +396,12 @@ select {
   opacity: 0.5;
 }
 
+/* A PIN is only a few digits, so it needs less room than a room ID. */
+.pin-field input {
+  width: 84px;
+  letter-spacing: 0.15em;
+}
+
 .text-field button {
   padding: 5px 7px;
   border-radius: 5px;
@@ -1284,5 +1290,64 @@ html.embed #handoffPrompt {
 
 html.embed #handoffPrompt {
   top: 58px;
+}
+
+/* Viewer PIN gate: covers the player until the room's PIN is entered, so it
+   replaces the "waiting" placeholder instead of stacking above it. */
+.pin-gate {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.pin-form {
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+}
+
+.pin-form h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.pin-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pin-row {
+  display: flex;
+  gap: 8px;
+}
+
+.pin-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-input);
+  color: var(--text);
+  font: inherit;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+.pin-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pin-error {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--bad);
 }
 

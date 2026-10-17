@@ -1,6 +1,6 @@
 {
   "name": "golive",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Golive: friends-only browser screen sharing over WebRTC, signaled by Cloudflare Workers + Durable Objects",
   "private": true,
   "main": "worker.js",

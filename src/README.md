@@ -43,7 +43,9 @@ domain, delete the `routes` entry and deploy to `golive.<account>.workers.dev`.
    streamer optionally types a **Room ID** (3-24 chars: `a-z`, `0-9`, `-`, `_`,
    starting with a letter or number; leave it blank for a random one) and clicks
    **Start sharing**, then picks a screen/window/tab. The chosen ID is saved in
-   `localStorage`, so the same link works next time.
+   `localStorage`, so the same link works next time. Optionally type a 4-8 digit
+   **PIN** (also remembered): viewers then have to enter it before they can
+   watch. Leave it blank for an open room.
 2. Share the `/watch/<id>` link. On mobile the **Share** button opens the native
    share sheet; on desktop **QR code** shows a scannable code so a phone can join
    without retyping. Up to `MAX_VIEWERS` devices (default 8) can join. If the
@@ -57,7 +59,8 @@ domain, delete the `routes` entry and deploy to `golive.<account>.workers.dev`.
    remembered on the next visit. For viewers the **Log** starts collapsed behind
    a toggle, and status messages and log lines are announced to screen readers
    (`aria-live`). Viewers can also pop the stream out into **picture-in-picture**
-   where the browser supports it.
+   where the browser supports it. If the room has a PIN, the player is covered by
+   a PIN prompt until the right code is entered (a wrong one says so and stays).
 4. **Squad** (`/squad`) watches several rooms at once: type a room code (or paste
    a `/watch/…` link) and each room opens as a tile — the normal viewer page in
    embed mode (`?embed=1`) inside an iframe, so signaling and media are unchanged
@@ -233,8 +236,19 @@ Before starting, the streamer chooses:
   host then re-joins the same room as a viewer, so both keep watching the same
   link with no reload. Denials and unanswered requests (45s) release the
   captured tracks.
-- **Squad (multi-stream)**: `/squad` is a thin shell — each room is the ordinary
-  viewer page loaded with `?embed=1` in an iframe, so nothing in the signaling or
+- **Optional room PIN**: the host may set a 4-8 digit PIN, which rides on the
+  signaling socket URL (`/ws?...&pin=`) so the Durable Object enforces it with
+  no extra messages (incoming WS messages are the billed DO requests). A viewer
+  without it is rejected with `pin-required` and the client shows a gate that
+  covers the player; a wrong one gets `pin-wrong`. The PIN is persisted in DO
+  storage because a viewer can connect — and revive the DO — before the host
+  ever appears, and when the host turns a PIN on any viewer already waiting
+  without it (`pin` recorded in its attachment) is asked too, so a protected
+  room is never watched through an early, pin-less seat. The host re-sends the
+  PIN on every reconnect; leaving the field empty clears it. It is a second
+  factor on top of the link, not an account: anyone who has both the link and
+  the PIN gets in, and the link itself is still the real secret.
+- **Squad (multi-stream)**: `/squad` is a thin shell — each room is the ordinary  viewer page loaded with `?embed=1` in an iframe, so nothing in the signaling or
   media path changes and it stays direct P2P (one connection per room, not a
   mesh). The shell only owns the grid and the audio routing: it posts
   `{type:"audio"}` messages into each tile, and each tile posts

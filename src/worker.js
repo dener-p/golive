@@ -9,6 +9,8 @@
 // waits in the room until the streamer (re)appears.
 
 const ROOM_ID_RE = /^[a-z0-9][a-z0-9_-]{2,23}$/;
+// Optional room PIN: 4-8 digits. Anything else is treated as "no PIN".
+const PIN_RE = /^\d{4,8}$/;
 const MAX_MSG_BYTES = 64 * 1024;
 const WS_OPEN = 1; // WebSocket.OPEN
 const NO_STORE = {
@@ -136,6 +138,13 @@ export class Room {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    // Optional room PIN. It has to outlive this instance: a viewer can connect
+    // (and revive the DO) before the host ever appears, so it is persisted
+    // rather than kept only in memory.
+    this.pin = "";
+    ctx.blockConcurrencyWhile(async () => {
+      this.pin = (await ctx.storage.get("pin")) || "";
+    });
   }
 
   get maxViewers() {
@@ -196,6 +205,15 @@ export class Room {
     }
   }
 
+  // Persist the PIN so it survives eviction. The host re-sends it on every
+  // (re)connect, so storage is the backstop for a viewer arriving first.
+  async setPin(pin) {
+    if (pin === this.pin) return;
+    this.pin = pin;
+    if (pin) await this.ctx.storage.put("pin", pin);
+    else await this.ctx.storage.delete("pin");
+  }
+
   async fetch(request) {
     if (request.headers.get("Upgrade") !== "websocket") {
       return text("Expected a WebSocket upgrade\n", 426);
@@ -205,6 +223,10 @@ export class Room {
     const role = url.searchParams.get("role") === "streamer" ? "streamer" : "viewer";
     const room = (url.searchParams.get("room") || "").toLowerCase();
     const token = url.searchParams.get("token") || "";
+    // An optional room PIN rides on the socket URL, so enforcing it costs no
+    // extra messages: anything that is not 4-8 digits counts as "no PIN".
+    const rawPin = url.searchParams.get("pin") || "";
+    const pin = PIN_RE.test(rawPin) ? rawPin : "";
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -230,7 +252,16 @@ export class Room {
         return reject("room-in-use", "That room ID is already live. Pick another one.", "room-in-use");
       }
       for (const old of others) this.replaceSocket(old, true);
+      // The host owns the PIN: setting one (or clearing it with an empty value)
+      // takes effect from now on. Done before registration so a viewer racing the
+      // host's reconnect cannot slip in against the old value.
+      await this.setPin(pin);
     } else {
+      // A viewer must present the room's PIN before anything else, so a wrong
+      // PIN never disturbs an existing seat.
+      if (this.pin && pin !== this.pin) {
+        return reject(pin ? "pin-wrong" : "pin-required", "This room is PIN-protected.", "pin-required");
+      }
       // A viewer reconnecting (same token) frees its own old slot instead of
       // taking another one, so reconnects cannot fill the room with ghosts.
       if (token) {
@@ -245,7 +276,7 @@ export class Room {
 
     // Registration happens on connect: no create/join handshake.
     const peerId = role === "viewer" ? newPeerId() : null;
-    server.serializeAttachment({ role, peerId, token });
+    server.serializeAttachment({ role, peerId, token, pin });
     this.ctx.acceptWebSocket(server, [role]);
 
     if (role === "streamer") {
@@ -254,6 +285,17 @@ export class Room {
       // through a signaling blip can settle instead of timing out its grace
       // period, and offer to each of them.
       for (const viewer of this.socketsWithRole("viewer", server)) {
+        // Viewers that joined before the PIN existed are asked for it too, so a
+        // protected room is never watched through an early, pin-less seat.
+        if (pin && (this.attachment(viewer)?.pin || "") !== pin) {
+          this.send(viewer, { type: "error", code: "pin-required", message: "This room is PIN-protected." });
+          try {
+            viewer.close(1013, "pin-required");
+          } catch {
+            /* socket already closed */
+          }
+          continue;
+        }
         const pid = this.attachment(viewer)?.peerId;
         this.send(viewer, { type: "streamer-back" });
         if (pid) this.send(server, { type: "peer-joined", peerId: pid });

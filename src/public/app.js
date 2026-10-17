@@ -88,6 +88,15 @@ const SIGNAL_TOKEN = (() => {
   }
 })();
 
+// Optional room PIN. The host sets or clears it and it rides on the signaling
+// socket URL, so the Durable Object enforces it without extra messages. A viewer
+// that arrives without it is asked for it; a wrong one is rejected and re-asked.
+const PIN_RE = /^\d{4,8}$/;
+const PIN_SESSION_KEY = "golive.pin";
+let roomPin = (() => {
+  try { return sessionStorage.getItem(PIN_SESSION_KEY) || ""; } catch { return ""; }
+})();
+
 const STAT_FIELDS = [
   "dPair", "dPath", "dIpv6", "dRtt", "dLoss", "dJitter", "dFreeze",
   "dCodec", "dRes", "dFps", "dLimit", "dBitrate", "dUpload",
@@ -573,6 +582,7 @@ async function applyQualityToAllSenders(key = currentPresetKey()) {
 function wsUrl(room, role) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const q = new URLSearchParams({ room, role, token: SIGNAL_TOKEN });
+  if (roomPin) q.set("pin", roomPin);
   return `${proto}://${location.host}/ws?${q.toString()}`;
 }
 
@@ -696,6 +706,7 @@ async function handleSignal(msg) {
       break;
     case "joined":
       closeAllConns(); // fresh peer id after a reconnect
+      showPinGate(false);
       log(t("log.joined", { room: msg.room }));
       showWaiting();
       break;
@@ -768,6 +779,17 @@ async function handleSignal(msg) {
       showAlert(t("alert.stageDenied"), "warn");
       break;
     case "error": {
+      // A PIN rejection is not a retryable error: it opens the gate instead of
+      // the reconnect loop (the gate reconnects when the viewer submits).
+      if (msg.code === "pin-required" || msg.code === "pin-wrong") {
+        roomPin = "";
+        try { sessionStorage.removeItem(PIN_SESSION_KEY); } catch { /* storage unavailable */ }
+        log(t("log.pinRequired"), "warn");
+        showPinGate(true, msg.code === "pin-wrong");
+        setTakeStageAvailable(false);
+        stopReconnecting();
+        break;
+      }
       const message = msg.code === "room-in-use" ? t("alert.roomInUse")
         : msg.code === "room-full" ? t("alert.roomFull")
         : msg.code === "room-taken" ? t("alert.roomTaken")
@@ -1638,6 +1660,21 @@ function showWaiting() {
   checkAudioHint();
 }
 
+// Viewer: cover the player with a PIN prompt when the room requires one. The
+// gate replaces the "waiting" placeholder (it is opaque) instead of stacking
+// above it, and `wrong` shows the retry line after a rejected PIN.
+function showPinGate(show, wrong = false) {
+  const gate = $("pinGate");
+  if (!gate) return;
+  gate.hidden = !show;
+  if (!show) return;
+  const inputEl = $("pinInput");
+  inputEl.value = "";
+  $("pinError").hidden = !wrong;
+  showWaiting();
+  inputEl.focus();
+}
+
 function randomRoomId() {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
   const bytes = new Uint8Array(8);
@@ -1696,6 +1733,18 @@ async function startSharing() {
   roomId = id;
   try { localStorage.setItem(ROOM_STORAGE_KEY, id); } catch { /* storage unavailable */ }
 
+  // Optional room PIN: read and validate it before capturing so a bad value
+  // fails fast, and remember it for the next visit.
+  const pinField = $("roomPin");
+  const pinVal = pinField ? pinField.value.trim() : "";
+  if (pinVal && !PIN_RE.test(pinVal)) {
+    showAlert(t("alert.pinInvalid"), "bad");
+    $("startBtn").disabled = false;
+    return;
+  }
+  roomPin = pinVal;
+  savePrefs({ pin: pinVal });
+
   const wantAudio = $("shareAudio").checked;
   const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
   const fps = preset.captureFps || 60;
@@ -1737,7 +1786,9 @@ async function startSharing() {
   $("preferAv1").disabled = true;
   $("shareAudio").disabled = true;
   $("roomId").disabled = true;
+  if (pinField) pinField.disabled = true;
   setField("dQuality", presetLabel());
+  if (roomPin) log(t("log.pinSet"));
   requestWakeLock();
   try {
     await connectSignaling(roomId, "streamer");
@@ -1771,6 +1822,7 @@ function stopSharing() {
   $("preferAv1").disabled = false;
   $("shareAudio").disabled = false;
   $("roomId").disabled = false;
+  if ($("roomPin")) $("roomPin").disabled = false;
   setField("dSignaling", t("signal.idle"));
   resetStatsFields();
   log(t("log.sharingStopped"));
@@ -2320,6 +2372,17 @@ function init() {
   $("preferAv1").addEventListener("change", () => savePrefs({ preferAv1: $("preferAv1").checked }));
   $("shareAudio").addEventListener("change", () => savePrefs({ shareAudio: $("shareAudio").checked }));
 
+  // Optional room PIN (host). Digits only, remembered for the next visit.
+  const pinInput = $("roomPin");
+  if (pinInput) {
+    if (typeof prefs.pin === "string" && PIN_RE.test(prefs.pin)) pinInput.value = prefs.pin;
+    pinInput.addEventListener("input", () => {
+      const digits = pinInput.value.replace(/\D/g, "").slice(0, 8);
+      if (digits !== pinInput.value) pinInput.value = digits;
+    });
+    pinInput.addEventListener("change", () => savePrefs({ pin: pinInput.value }));
+  }
+
   // Controls are wired for both roles; a handoff can flip them at runtime, and
   // the ones that do not apply to a viewer stay hidden.
   $("startBtn").addEventListener("click", startSharing);
@@ -2345,6 +2408,26 @@ function init() {
   $("takeStageBtn").addEventListener("click", requestStage);
   $("handoffAccept").addEventListener("click", grantStage);
   $("handoffDecline").addEventListener("click", declineStage);
+
+  // PIN gate (viewer): submitting reconnects with the entered PIN.
+  $("pinForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const val = ($("pinInput").value || "").trim();
+    if (!PIN_RE.test(val)) {
+      $("pinError").hidden = false;
+      $("pinInput").focus();
+      return;
+    }
+    roomPin = val;
+    try { sessionStorage.setItem(PIN_SESSION_KEY, val); } catch { /* storage unavailable */ }
+    $("pinError").hidden = true;
+    showPinGate(false);
+    joinRoom();
+  });
+  $("pinInput").addEventListener("input", () => {
+    $("pinInput").value = $("pinInput").value.replace(/\D/g, "").slice(0, 8);
+    $("pinError").hidden = true;
+  });
 
   setupPip();
 
