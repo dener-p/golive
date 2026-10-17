@@ -188,6 +188,16 @@ Before starting, the streamer chooses:
   The streamer also sees the encoder's **quality-limitation reason** (CPU vs
   bandwidth), and a **Copy diagnostics** button snapshots the panel plus the log
   to the clipboard for easy reporting.
+- **Bug reports leave quickly**: both pages carry a footer with a GitHub link and
+  a **Report a bug** button (also in the diagnostics panel). It puts a pre-filled
+  report on the clipboard — version, page, locale and, in the app, the whole
+  diagnostics panel and log — and shows where to send it: the maintainer's
+  Discord handle or a new GitHub issue. `report.js` is shared by the app and the
+  landing page. Discord has no username-to-DM link, so the handle is offered for
+  a manual DM rather than deep-linked.
+- **Version**: `APP_VERSION` in `wrangler.jsonc` is injected into the page's
+  `<meta name="golive-version">` by the Worker, so bug reports name the deploy.
+  Keep it in sync with `package.json`.
 - **Wake lock**: while a stream is live (hosting or watching) the page holds a
   Screen Wake Lock so the device does not sleep mid-session, re-acquiring it when
   the tab becomes visible again.
@@ -203,5 +213,6 @@ Before starting, the streamer chooses:
 - `public/home.html` - landing page at `/` (Host or Watch)
 - `public/i18n.js` - pt-BR / en translations (no build step)
 - `public/qr.js` - dependency-free QR encoder (room link as a scannable code)
+- `public/report.js` - shareable "Report a bug" flow (clipboard + Discord/GitHub)
 - `public/og.png` - 1200x630 link-preview image (worker injects the meta tags)
 - `public/favicon.png` - icon

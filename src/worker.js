@@ -66,7 +66,8 @@ async function serveShell(env, url, assetPath, og) {
     .replaceAll("__OG_TITLE__", escapeHtml(og.title))
     .replaceAll("__OG_DESC__", escapeHtml(og.description))
     .replaceAll("__OG_URL__", escapeHtml(url.origin + url.pathname))
-    .replaceAll("__OG_IMAGE__", escapeHtml(url.origin + OG_IMAGE));
+    .replaceAll("__OG_IMAGE__", escapeHtml(url.origin + OG_IMAGE))
+    .replaceAll("__APP_VERSION__", escapeHtml(String(env.APP_VERSION || "")));
   const headers = new Headers(res.headers);
   for (const [k, v] of Object.entries(NO_STORE)) headers.set(k, v);
   headers.set("Content-Type", "text/html; charset=utf-8");

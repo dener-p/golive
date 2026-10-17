@@ -1478,6 +1478,9 @@ function diagnosticsText() {
   return lines.join("\n");
 }
 
+// report.js reads this to fold the panel + log into a bug report.
+window.goliveDiagnostics = diagnosticsText;
+
 // ---------- Streamer / viewer flows ----------
 
 function showRoomLink() {

@@ -17,7 +17,8 @@
     { "tag": "v1", "new_sqlite_classes": ["Room"] }
   ],
   "vars": {
-    "MAX_VIEWERS": "8"
+    "MAX_VIEWERS": "8",
+    "APP_VERSION": "0.3.3"
   },
   "routes": [
     { "pattern": "golive.puhl.dev", "custom_domain": true }

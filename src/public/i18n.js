@@ -67,6 +67,16 @@
       "log.show": "Mostrar registro",
       "log.hide": "Ocultar registro",
 
+      // Bug report (footer + diagnostics panel)
+      "report.action": "Reportar um bug",
+      "report.github": "Repositório no GitHub",
+      "report.title": "Reportar um bug",
+      "report.hint": "O relatório foi copiado. Envie para {handle} no Discord com uma breve descrição do que aconteceu, ou abra um issue no GitHub.",
+      "report.copyReport": "Copiar relatório",
+      "report.copyHandle": "Copiar {handle}",
+      "report.openIssues": "Abrir um issue",
+      "report.close": "Fechar",
+
       // Diagnostics labels
       "diag.signaling": "Sinalização",
       "diag.viewers": "Espectadores conectados",
@@ -293,6 +303,16 @@
       "share.text": "Join my Golive room",
       "log.show": "Show log",
       "log.hide": "Hide log",
+
+      // Bug report (footer + diagnostics panel)
+      "report.action": "Report a bug",
+      "report.github": "GitHub repository",
+      "report.title": "Report a bug",
+      "report.hint": "The report is on your clipboard. Send it to {handle} on Discord with a short description of what happened, or open an issue on GitHub.",
+      "report.copyReport": "Copy report",
+      "report.copyHandle": "Copy {handle}",
+      "report.openIssues": "Open a GitHub issue",
+      "report.close": "Close",
 
       "diag.signaling": "Signaling",
       "diag.viewers": "Connected viewers",
