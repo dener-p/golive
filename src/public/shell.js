@@ -1,7 +1,8 @@
 // Golive shell: one page, many rooms. Each room is a native panel built from
 // the <template> in index.html and driven by its own createRoom() instance, so
-// hosting and watching several rooms at once works without iframes. Panels live
-// in a free-form grid of columns; drag the splitters between them to resize.
+// hosting and watching several rooms at once works without iframes. Panels are
+// laid out in a single flex row or column (the Columns/Stack presets); drag the
+// splitters between them to resize.
 import { createRoom } from "./room.js";
 
 const $ = (id) => document.getElementById(id);
@@ -9,48 +10,61 @@ const t = (key, vars) => window.t(key, vars);
 
 const grid = $("grid");
 const panelTpl = $("roomPanelTpl");
-const MAX_PER_COL = 2;
 const LAYOUT_KEY = "golive.layout";
 const THEATER_KEY = "golive.theater";
 
 let seq = 0;
-const panels = new Map();   // key -> { key, el, els, room, role, h, unit, col, state }
-const columns = [];         // { el, weight, keys: [] }
+const panels = new Map();   // key -> { key, el, els, room, role, w, unit, state }
 let activeKey = null;
 let audioKey = null;
+let layoutMode = "columns"; // "columns" = side by side, "stack" = vertical
 
 // ---------- Layout ----------
+//
+// Panels are direct children of #grid; splitters are interleaved between them.
+// The direction (row/column) is the whole layout preset, and each panel carries
+// a weight so dragging a splitter redistributes space between its two neighbours.
 
-function newColumn(weight) {
-  const el = document.createElement("div");
-  el.className = "col";
-  el.style.flexGrow = weight;
-  const rec = { el, weight, keys: [] };
-  columns.push(rec);
-  grid.appendChild(el);
-  syncSplits();
-  return rec;
+function gridIsRow() {
+  return layoutMode !== "stack";
 }
 
-function makeSplitV(a, b) {
+function applySizes() {
+  grid.classList.toggle("grid-cols", gridIsRow());
+  grid.classList.toggle("grid-stack", !gridIsRow());
+  for (const rec of panels.values()) {
+    rec.el.style.flexGrow = rec.w || 1;
+    rec.el.style.flexBasis = "0";
+    rec.el.style.flexShrink = "1";
+  }
+}
+
+function makeSplit(a, b) {
+  const row = gridIsRow();
   const s = document.createElement("div");
-  s.className = "split split-v";
+  s.className = "split " + (row ? "split-v" : "split-h");
   s.setAttribute("role", "separator");
-  s.setAttribute("aria-orientation", "vertical");
+  s.setAttribute("aria-orientation", row ? "vertical" : "horizontal");
   s.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
     e.preventDefault();
-    const startX = e.clientX;
-    const total = columns.reduce((sum, c) => sum + c.weight, 0);
-    const pxPer = grid.clientWidth / total || 1;
-    const wa = a.weight, wb = b.weight;
-    const minW = 140 / pxPer;
+    setActive(a.key);
+    const start = row ? e.clientX : e.clientY;
+    const recs = [...panels.values()];
+    const total = recs.reduce((sum, r) => sum + (r.w || 1), 0);
+    const size = (row ? grid.clientWidth : grid.clientHeight) || 1;
+    const pxPer = size / total || 1;
+    const wa = a.w || 1, wb = b.w || 1;
+    const min = (row ? 160 : 96) / pxPer;
+    document.body.classList.add("dragging");
     const move = (ev) => {
-      let na = wa + (ev.clientX - startX) / pxPer;
-      let nb = wb - (ev.clientX - startX) / pxPer;
-      if (na < minW) { nb -= minW - na; na = minW; }
-      if (nb < minW) { na -= minW - nb; nb = minW; }
-      a.weight = na; b.weight = nb;
-      applyCols();
+      const d = ((row ? ev.clientX : ev.clientY) - start) / pxPer;
+      let na = wa + d, nb = wb - d;
+      if (na < min) { nb -= min - na; na = min; }
+      if (nb < min) { na -= min - nb; nb = min; }
+      a.w = Math.max(min, na);
+      b.w = Math.max(min, nb);
+      applySizes();
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -58,85 +72,43 @@ function makeSplitV(a, b) {
       document.body.classList.remove("dragging");
       saveLayout();
     };
-    document.body.classList.add("dragging");
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   });
   return s;
 }
 
-function makeSplitH(col, keyA, keyB) {
-  const s = document.createElement("div");
-  s.className = "split split-h";
-  s.setAttribute("role", "separator");
-  s.setAttribute("aria-orientation", "horizontal");
-  s.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    setActive(keyA);
-    const a = panels.get(keyA), b = panels.get(keyB);
-    if (!a || !b) return;
-    const startY = e.clientY;
-    const total = col.keys.reduce((sum, k) => sum + (panels.get(k)?.h || 1), 0);
-    const pxPer = col.el.clientHeight / total || 1;
-    const ha = a.h, hb = b.h;
-    const minH = 96 / pxPer;
-    const move = (ev) => {
-      let na = ha + (ev.clientY - startY) / pxPer;
-      let nb = hb - (ev.clientY - startY) / pxPer;
-      if (na < minH) { nb -= minH - na; na = minH; }
-      if (nb < minH) { na -= minH - nb; nb = minH; }
-      a.h = na; b.h = nb;
-      applyRows(col);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      document.body.classList.remove("dragging");
-      saveLayout();
-    };
-    document.body.classList.add("dragging");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  });
-  return s;
-}
-
-function syncSplits() {
-  [...grid.querySelectorAll(".split-v")].forEach((s) => s.remove());
-  for (let i = 1; i < columns.length; i++) {
-    grid.insertBefore(makeSplitV(columns[i - 1], columns[i]), columns[i].el);
+function rebuildSplitters() {
+  [...grid.querySelectorAll(".split")].forEach((s) => s.remove());
+  const recs = [...panels.values()];
+  for (let i = 1; i < recs.length; i++) {
+    grid.insertBefore(makeSplit(recs[i - 1], recs[i]), recs[i].el);
   }
 }
 
-function syncColSplits(col) {
-  [...col.el.querySelectorAll(".split-h")].forEach((s) => s.remove());
-  for (let i = 1; i < col.keys.length; i++) {
-    col.el.insertBefore(makeSplitH(col, col.keys[i - 1], col.keys[i]), panels.get(col.keys[i]).el);
-  }
+function updateLayoutButtons() {
+  const c = $("layoutColumns");
+  const s = $("layoutStack");
+  if (c) c.setAttribute("aria-pressed", String(layoutMode === "columns"));
+  if (s) s.setAttribute("aria-pressed", String(layoutMode === "stack"));
 }
 
-function applyCols() {
-  columns.forEach((c) => { c.el.style.flexGrow = c.weight; });
-}
-
-function applyRows(col) {
-  col.keys.forEach((k) => {
-    const r = panels.get(k);
-    if (r) r.el.style.flexGrow = r.h;
-  });
+function relayout(mode) {
+  layoutMode = mode === "stack" ? "stack" : "columns";
+  updateLayoutButtons();
+  applySizes();
+  rebuildSplitters();
+  saveLayout();
 }
 
 function saveLayout() {
   const data = {
-    columns: columns.map((c) => ({
-      weight: c.weight,
-      // A streamer panel is not persisted: presenting needs a user gesture, so a
-      // reload should not (and cannot) bring it back.
-      panels: c.keys
-        .map((k) => panels.get(k))
-        .filter((r) => r && r.role === "viewer" && r.room)
-        .map((r) => ({ room: r.room, h: r.h })),
-    })).filter((c) => c.panels.length),
+    mode: layoutMode,
+    // A streamer panel is not persisted: presenting needs a user gesture, so a
+    // reload should not (and cannot) bring it back.
+    panels: [...panels.values()]
+      .filter((r) => r.role === "viewer" && r.room)
+      .map((r) => ({ room: r.room, w: r.w || 1 })),
   };
   try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(data)); } catch { /* storage unavailable */ }
 }
@@ -144,16 +116,14 @@ function saveLayout() {
 function restoreLayout() {
   let data = null;
   try { data = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null"); } catch { data = null; }
-  if (!data || !Array.isArray(data.columns) || !data.columns.length) return false;
-  for (const c of data.columns) {
-    if (!c.panels) continue;
-    const col = newColumn(c.weight || 1);
-    for (const p of c.panels) {
-      if (!p.room) continue;
-      appendToCol(col, { room: p.room, role: "viewer", persist: false }, p.h || 1);
-    }
+  if (!data || !Array.isArray(data.panels) || !data.panels.length) return false;
+  layoutMode = data.mode === "stack" ? "stack" : "columns";
+  for (const p of data.panels) {
+    if (!p.room) continue;
+    addPanel({ room: p.room, role: "viewer", persist: false, w: p.w || 1 });
   }
-  return columns.length > 0;
+  updateLayoutButtons();
+  return panels.size > 0;
 }
 
 // ---------- Panels ----------
@@ -164,13 +134,13 @@ function collectEls(root) {
   return els;
 }
 
-function appendToCol(col, { room, role, pin, persist = true }, h = 1) {
+function addPanel({ room, role, pin, persist = true, w = 1 }) {
   const key = "p" + (++seq);
   const el = panelTpl.content.firstElementChild.cloneNode(true);
   el.dataset.key = key;
   const els = collectEls(el);
 
-  const rec = { key, el, els, room: room || null, role, h, unit: null, col, state: "" };
+  const rec = { key, el, els, room: room || null, role, w, unit: null, state: "" };
   rec.unit = createRoom(els, {
     role,
     room: room || null,
@@ -183,7 +153,7 @@ function appendToCol(col, { room, role, pin, persist = true }, h = 1) {
   });
 
   rec.els.roomName.textContent = room ? "#" + room : t("role.host");
-  els.audioBtn.addEventListener("click", (e) => { e.stopPropagation(); focusAudio(key); });
+  if (els.audioBtn) els.audioBtn.addEventListener("click", (e) => { e.stopPropagation(); focusAudio(key); });
   els.fullBtn.addEventListener("click", (e) => { e.stopPropagation(); setActive(key); rec.unit.toggleFullscreen(); });
   els.openBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -197,10 +167,9 @@ function appendToCol(col, { room, role, pin, persist = true }, h = 1) {
   if (window.i18n) window.i18n.apply(el);
 
   panels.set(key, rec);
-  col.keys.push(key);
-  col.el.appendChild(el);
-  syncColSplits(col);
-  applyRows(col);
+  grid.appendChild(el);
+  rebuildSplitters();
+  applySizes();
 
   if (persist) saveLayout();
   setActive(key);
@@ -208,34 +177,15 @@ function appendToCol(col, { room, role, pin, persist = true }, h = 1) {
   return key;
 }
 
-function addPanel(opts) {
-  let col = columns[columns.length - 1];
-  if (!col || col.keys.length >= MAX_PER_COL) col = newColumn(1);
-  return appendToCol(col, opts);
-}
-
 function removePanel(key) {
   const rec = panels.get(key);
   if (!rec) return;
   rec.unit.destroy();
-  const col = rec.col;
-  const idx = col.keys.indexOf(key);
-  col.keys.splice(idx, 1);
   rec.el.remove();
   panels.delete(key);
-  if (col.keys.length === 0) {
-    const ci = columns.indexOf(col);
-    col.el.remove();
-    columns.splice(ci, 1);
-    syncSplits();
-  } else {
-    syncColSplits(col);
-    applyRows(col);
-  }
-  if (activeKey === key) {
-    const next = panels.keys().next().value || null;
-    setActive(next);
-  }
+  rebuildSplitters();
+  applySizes();
+  if (activeKey === key) setActive(panels.keys().next().value || null);
   if (audioKey === key) { audioKey = null; updateAudioButtons(); }
   saveLayout();
   updateEmpty();
@@ -244,6 +194,9 @@ function removePanel(key) {
 function updateEmpty() {
   const empty = $("empty");
   if (empty) empty.hidden = panels.size > 0;
+  // A single room is shown compact and centered instead of stretching across
+  // the whole window.
+  if (grid) grid.classList.toggle("single", panels.size === 1);
 }
 
 function setBadge(rec) {
@@ -450,6 +403,11 @@ function wireToolbar() {
     panels.get(key)?.el.scrollIntoView({ block: "nearest" });
   });
 
+  const layoutCols = $("layoutColumns");
+  const layoutStack = $("layoutStack");
+  if (layoutCols) layoutCols.addEventListener("click", () => relayout("columns"));
+  if (layoutStack) layoutStack.addEventListener("click", () => relayout("stack"));
+
   $("copyDiagBtn").addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(diagnosticsText()); appendLog(null, t("log.diagCopied")); }
     catch { appendLog(null, t("log.clipboardUnavailable"), "warn"); }
@@ -475,6 +433,7 @@ function boot() {
   wireToolbar();
   wireQr();
   wireShortcuts();
+  updateLayoutButtons();
   updateEmpty();
 
   const path = location.pathname.toLowerCase();

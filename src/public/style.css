@@ -1355,6 +1355,39 @@ html.embed #handoffPrompt {
   flex-wrap: wrap;
 }
 
+.layout-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 7px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.seg-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.seg-btn[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--panel-input);
+  border-color: var(--border);
+}
+
 main.workspace {
   max-width: none;
   margin: 0;
@@ -1404,12 +1437,18 @@ main.workspace {
   min-height: 62vh;
 }
 
-.col {
-  display: flex;
+/* A single room is shown compact and centered instead of stretched full width. */
+#grid.single {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+#grid.grid-cols {
+  flex-direction: row;
+}
+
+#grid.grid-stack {
   flex-direction: column;
-  flex-basis: 0;
-  min-width: 0;
-  min-height: 0;
 }
 
 .split {
@@ -1648,16 +1687,12 @@ body.dragging .split-h {
 }
 
 @media (max-width: 720px) {
-  #grid {
+  #grid.grid-cols {
     flex-direction: column;
   }
 
   .split-v {
     display: none;
-  }
-
-  .col {
-    flex: 0 0 auto !important;
   }
 
   .room-panel {

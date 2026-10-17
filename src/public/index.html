@@ -39,6 +39,14 @@
         <button id="theaterBtn" class="btn-ghost" type="button" aria-pressed="false" data-i18n-title="app.theater" title="Theater mode">
           <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
         </button>
+        <div class="layout-toggle" role="group" data-i18n-aria-label="shell.layout" aria-label="Layout">
+          <button id="layoutColumns" class="seg-btn" type="button" aria-pressed="true" data-i18n-title="shell.layoutColumns" title="Side by side" aria-label="Side by side">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/></svg>
+          </button>
+          <button id="layoutStack" class="seg-btn" type="button" aria-pressed="false" data-i18n-title="shell.layoutStack" title="Stacked" aria-label="Stacked">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/></svg>
+          </button>
+        </div>
         <select id="langSelect" class="lang-select" data-lang-select data-i18n-aria-label="app.language" aria-label="Language"></select>
       </div>
     </div>
