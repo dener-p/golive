@@ -69,6 +69,26 @@
       "log.show": "Mostrar registro",
       "log.hide": "Ocultar registro",
 
+      // Presenter handoff (a viewer asks, the host answers)
+      "handoff.takeStage": "Assumir o palco",
+      "handoff.takeStageHint": "Pedir ao host para transmitir a sua tela",
+      "handoff.accept": "Deixar apresentar",
+      "handoff.decline": "Agora não",
+      "alert.handoffAsk": "{peer} quer apresentar a tela. Liberar o palco?",
+      "alert.stageRequested": "Pedido enviado — aguardando o host liberar o palco.",
+      "alert.stageDenied": "O host não liberou o palco.",
+      "alert.stageTimeout": "Sem resposta do host. Pedido cancelado.",
+      "alert.presenterSwitching": "Trocando de apresentador…",
+      "alert.stageHandedOff": "Palco entregue. Reconectando para assistir.",
+      "log.stageAsked": "Pedido para assumir o palco enviado.",
+      "log.stageRequested": "{peer} pediu o palco.",
+      "log.stageGranted": "Palco entregue a {peer}.",
+      "log.stageDeclined": "Palco recusado para {peer}.",
+      "log.stageDenied": "Seu pedido para assumir o palco foi recusado.",
+      "log.stageTimeout": "O pedido para assumir o palco expirou.",
+      "log.presenterSwitching": "Trocando de apresentador — reconstruindo a conexão.",
+      "log.becameStreamer": "Agora você está transmitindo na sala {room}.",
+
       // Bug report (footer + diagnostics panel)
       "report.action": "Reportar um bug",
       "report.github": "Repositório no GitHub",
@@ -310,6 +330,26 @@
       "share.text": "Join my Golive room",
       "log.show": "Show log",
       "log.hide": "Hide log",
+
+      // Presenter handoff (a viewer asks, the host answers)
+      "handoff.takeStage": "Take the stage",
+      "handoff.takeStageHint": "Ask the host to broadcast your screen",
+      "handoff.accept": "Let them present",
+      "handoff.decline": "Not now",
+      "alert.handoffAsk": "{peer} wants to present. Hand over the stage?",
+      "alert.stageRequested": "Request sent — waiting for the host to hand over the stage.",
+      "alert.stageDenied": "The host did not hand over the stage.",
+      "alert.stageTimeout": "No answer from the host. Request cancelled.",
+      "alert.presenterSwitching": "Switching presenter…",
+      "alert.stageHandedOff": "Stage handed over. Reconnecting to watch.",
+      "log.stageAsked": "Asked to take the stage.",
+      "log.stageRequested": "{peer} asked for the stage.",
+      "log.stageGranted": "Stage handed to {peer}.",
+      "log.stageDeclined": "Stage declined for {peer}.",
+      "log.stageDenied": "Your request to take the stage was declined.",
+      "log.stageTimeout": "The stage request timed out.",
+      "log.presenterSwitching": "Presenter switch — rebuilding the connection.",
+      "log.becameStreamer": "You are now presenting in room {room}.",
 
       // Bug report (footer + diagnostics panel)
       "report.action": "Report a bug",

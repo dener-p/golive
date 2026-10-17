@@ -519,6 +519,14 @@ select {
   font-size: 13.5px;
 }
 
+/* Handoff prompt: an alert with an answer, not just a message. */
+.handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .alert.warn {
   color: var(--warn);
   border-color: rgba(245, 165, 36, 0.4);
@@ -1031,6 +1039,11 @@ body.theater .volume-bar {
 body.theater .alert,
 body.theater .audio-hint {
   top: 14px;
+}
+
+/* The handoff prompt is also an alert; stack it below a live one. */
+body.theater #handoffPrompt {
+  top: 74px;
 }
 
 body.theater .volume-bar {

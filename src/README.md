@@ -212,6 +212,20 @@ Before starting, the streamer chooses:
   `Esc` (outside fullscreen) leaves it. `F` toggles fullscreen, `P`
   picture-in-picture and `M` mute (viewers only). Shortcuts are ignored while
   typing in a field or with the QR/report dialog open.
+- **Presenter handoff**: a viewer can ask to present (its button appears while a
+  streamer is in the room) and the host answers **Let them present** / **Not
+  now**. The requester captures its screen on the click — screen capture needs a
+  user gesture, so it can never be triggered remotely — and holds the stream
+  until the answer. On a grant the room swaps the stage rather than opening a
+  second one: `handoff-grant` retires both seats at once (the outgoing streamer
+  so its socket cannot linger as "room in use", and the requester so the new
+  streamer is not offered to its own old viewer socket), every other viewer gets
+  `peer-reset` and rebuilds — a new presenter means new ICE credentials and a
+  new DTLS fingerprint, which an existing `RTCPeerConnection` cannot adopt — and
+  the requester reconnects as the streamer on the same room and token. The old
+  host then re-joins the same room as a viewer, so both keep watching the same
+  link with no reload. Denials and unanswered requests (45s) release the
+  captured tracks.
 - Candidate logs show type and address family only; IP addresses are never
   displayed or stored. Anyone with the room link can join, so don't share
   private content.

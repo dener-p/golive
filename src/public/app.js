@@ -35,10 +35,12 @@ const ROOM_STORAGE_KEY = "golive.roomId";
 const AUDIO_PREFS_KEY = "golive.audio";
 const PREFS_KEY = "golive.prefs";
 
-// A /watch/<id> path means viewer; /host (and anything else) means host.
+// A /watch/<id> path means viewer; /host (and anything else) means host. A
+// presenter handoff swaps these at runtime on the same page, so they are not
+// constants.
 const match = location.pathname.match(/^\/watch\/([a-z0-9][a-z0-9_-]{2,23})$/);
-const roomFromUrl = match ? match[1] : null;
-const ROLE = roomFromUrl ? "viewer" : "streamer";
+let roomFromUrl = match ? match[1] : null;
+let ROLE = roomFromUrl ? "viewer" : "streamer";
 
 let ws = null;
 let localStream = null;
@@ -56,6 +58,14 @@ let reconnectDelay = 1000;
 const SIGNAL_STABLE_MS = 10000;
 let signalingRoom = null;
 let signalingRole = null;
+
+// Presenter handoff state. A viewer captures its screen on the click (capture
+// needs a user gesture, so it can never be triggered remotely) and asks the
+// streamer, which grants or denies; only then does the stage move.
+let stageRequest = null;          // { stream, timer } while we wait for an answer
+let pendingHandoffFrom = null;    // streamer: the peer id asking to present
+let streamerRebuild = false;      // viewer: the next offer comes from a new presenter
+const STAGE_REQUEST_TIMEOUT_MS = 45000;
 
 // A per-tab participant token, sent with the signaling socket. The room uses it
 // to recognize the same participant reconnecting and replace its own stale
@@ -77,6 +87,13 @@ const STAT_FIELDS = [
   "dPair", "dPath", "dIpv6", "dRtt", "dLoss", "dJitter", "dFreeze",
   "dCodec", "dRes", "dFps", "dLimit", "dBitrate", "dUpload",
   "dAudioCodec", "dAudioBitrate", "dImpl", "dCands",
+];
+
+// Diagnostics rows that only mean something for the host (they are shown or
+// hidden with the role, including when a handoff flips it at runtime).
+const STREAMER_STAT_FIELDS = [
+  "dViewersLabel", "dViewers", "dUploadLabel", "dUpload",
+  "dPeerLabel", "dPeer", "dQualityLabel", "dQuality",
 ];
 
 // Total upload above this (Mbps) usually means the host's connection will
@@ -638,6 +655,7 @@ async function handleSignal(msg) {
       showWaiting();
       break;
     case "streamer-waiting":
+      setTakeStageAvailable(false);
       showWaiting();
       break;
     case "peer-joined": {
@@ -652,20 +670,24 @@ async function handleSignal(msg) {
     }
     case "peer-left":
       log(t("log.viewerLeft", { id: msg.peerId }), "warn");
+      if (msg.peerId === pendingHandoffFrom) hideHandoffPrompt();
       closeConn(msg.peerId);
       break;
     case "streamer-left":
       // The streamer's signaling socket dropped; it may be reconnecting. Hold the
       // connection and keep playing, and only tear down if it does not return.
       log(t("log.streamerLeft"), "warn");
+      setTakeStageAvailable(false);
       beginStreamerGrace();
       break;
     case "streamer-back":
       // The streamer is connected again; settle without disturbing the media.
       cancelStreamerGrace();
       clearAlert();
+      setTakeStageAvailable(true);
       break;
     case "offer":
+      setTakeStageAvailable(true);
       await handleOffer(msg.payload);
       break;
     case "answer":
@@ -679,6 +701,26 @@ async function handleSignal(msg) {
       // its peer connection and send a fresh offer (same peer id).
       log(t("log.renegotiateRequested", { id: msg.from }));
       if (localStream) await startOffer(msg.from);
+      break;
+    case "peer-reset":
+      // A handoff is under way: the next offer comes from a different browser, so
+      // the old peer connection cannot be reused. Hold the picture through the
+      // grace period and rebuild when the new presenter offers.
+      log(t("log.presenterSwitching"), "warn");
+      streamerRebuild = true;
+      beginStreamerGrace(t("alert.presenterSwitching"));
+      break;
+    case "handoff-request":
+      log(t("log.stageRequested", { peer: peerLabel(msg.from) }), "warn");
+      showHandoffPrompt(msg.from);
+      break;
+    case "handoff-grant":
+      await acceptStage();
+      break;
+    case "handoff-deny":
+      log(t("log.stageDenied"), "warn");
+      cancelStageRequest();
+      showAlert(t("alert.stageDenied"), "warn");
       break;
     case "error": {
       const message = msg.code === "room-in-use" ? t("alert.roomInUse")
@@ -818,9 +860,9 @@ function closeAllConns() {
 const STREAMER_GRACE_MS = 10000;
 let streamerGraceTimer = null;
 
-function beginStreamerGrace() {
+function beginStreamerGrace(label) {
   if (streamerGraceTimer) return;
-  showAlert(t("alert.streamerReconnecting"), "warn");
+  showAlert(label || t("alert.streamerReconnecting"), "warn");
   streamerGraceTimer = setTimeout(() => {
     streamerGraceTimer = null;
     clearAlert();
@@ -1199,12 +1241,15 @@ async function startOffer(peerId) {
 
 // Viewer: answer the streamer's offer. A new offer on a live connection is a
 // renegotiation (ICE restart), so reuse the peer connection instead of tearing
-// it down — playback recovers without rebuilding from scratch.
+// it down — playback recovers without rebuilding from scratch. A presenter
+// handoff is the exception: the offer then comes from a different browser, whose
+// ICE credentials and DTLS fingerprint the old connection cannot adopt, so it is
+// rebuilt.
 async function handleOffer(offer) {
   const existing = conns.get(VIEWER_KEY);
-  const conn = existing && existing.pc && existing.pc.signalingState !== "closed"
-    ? existing
-    : createPc(VIEWER_KEY);
+  const reuse = existing && existing.pc && existing.pc.signalingState !== "closed" && !streamerRebuild;
+  streamerRebuild = false;
+  const conn = reuse ? existing : createPc(VIEWER_KEY);
   await conn.pc.setRemoteDescription(offer);
   await flushCandidates(conn);
   const tr = conn.pc.getTransceivers().find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === "video");
@@ -1695,6 +1740,230 @@ async function joinRoom() {
   }
 }
 
+// ---------- Presenter handoff ----------
+
+// Which chrome a host shows vs. a viewer. Split out of init so a handoff can
+// flip roles in place, without a reload (screen capture needs a user gesture, so
+// the new presenter cannot be established by reloading the page).
+function applyStreamerUI() {
+  document.querySelectorAll(".streamer-only").forEach((el) => { el.hidden = false; });
+  $("startBtn").hidden = false;
+  $("stopBtn").hidden = false;
+  $("viewerControls").hidden = true;
+  const pref = $("preferAv1");
+  if (pref) {
+    const wrap = pref.closest(".check-pill, label");
+    if (wrap) wrap.hidden = false;
+  }
+  for (const id of STREAMER_STAT_FIELDS) $(id).hidden = false;
+  setField("dQuality", presetLabel());
+  updatePeerSelect();
+  updateViewerCount();
+}
+
+function applyViewerUI() {
+  document.querySelectorAll(".streamer-only").forEach((el) => { el.hidden = true; });
+  $("startBtn").hidden = true;
+  $("stopBtn").hidden = true;
+  $("viewerControls").hidden = false;
+  const pref = $("preferAv1");
+  if (pref) {
+    const wrap = pref.closest(".check-pill, label");
+    if (wrap) wrap.hidden = true;
+  }
+  for (const id of STREAMER_STAT_FIELDS) $(id).hidden = true;
+  updatePeerQuality();
+}
+
+// Picture-in-picture, only where the browser supports it. Wired once; the
+// enclosing viewer controls are shown or hidden with the role.
+function setupPip() {
+  const videoEl = $("video");
+  if (typeof videoEl.requestPictureInPicture !== "function" || !document.pictureInPictureEnabled) {
+    $("pipBtn").hidden = true;
+    return;
+  }
+  $("pipBtn").addEventListener("click", async () => {
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await videoEl.requestPictureInPicture();
+    } catch { /* not allowed until a video is playing */ }
+  });
+  videoEl.addEventListener("enterpictureinpicture", () => { $("pipLabel").textContent = t("app.exitPip"); });
+  videoEl.addEventListener("leavepictureinpicture", () => { $("pipLabel").textContent = t("app.pip"); });
+}
+
+// "Take the stage" is only offered while a streamer is around to answer it.
+function setTakeStageAvailable(on) {
+  const btn = $("takeStageBtn");
+  if (!btn || ROLE !== "viewer") return;
+  btn.hidden = !on;
+}
+
+// Viewer: ask to present. The screen is captured here, from the click (capture
+// cannot be triggered remotely), and the stream waits until the host answers.
+async function requestStage() {
+  if (ROLE !== "viewer" || stageRequest) return;
+  const btn = $("takeStageBtn");
+  if (btn) btn.disabled = true;
+  const prefs = loadPrefs();
+  const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
+  let stream;
+  try {
+    stream = await getDisplayStream(preset.captureFps || 60, prefs.shareAudio !== false);
+  } catch (e) {
+    log(t("log.captureFailed", { name: e.name, message: e.message }), "bad");
+    showAlert(window.isSecureContext ? t("alert.captureDenied") : t("alert.captureInsecure"), "bad");
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (btn) btn.disabled = false;
+  stageRequest = {
+    stream,
+    timer: setTimeout(() => {
+      log(t("log.stageTimeout"), "warn");
+      cancelStageRequest();
+      showAlert(t("alert.stageTimeout"), "warn");
+    }, STAGE_REQUEST_TIMEOUT_MS),
+  };
+  log(t("log.stageAsked"));
+  showAlert(t("alert.stageRequested"), "warn");
+  signal({ type: "handoff-request" });
+}
+
+// Drop a pending request and its captured tracks (denied, timed out, gone).
+function cancelStageRequest() {
+  if (!stageRequest) return;
+  clearTimeout(stageRequest.timer);
+  stageRequest.stream.getTracks().forEach((tr) => tr.stop());
+  stageRequest = null;
+}
+
+// Streamer: a viewer is waiting for an answer.
+function showHandoffPrompt(peerId) {
+  if (ROLE !== "streamer") return;
+  pendingHandoffFrom = peerId;
+  $("handoffText").textContent = t("alert.handoffAsk", { peer: peerLabel(peerId) });
+  $("handoffPrompt").hidden = false;
+  $("handoffAccept").focus();
+}
+
+function hideHandoffPrompt() {
+  pendingHandoffFrom = null;
+  const prompt = $("handoffPrompt");
+  if (prompt) prompt.hidden = true;
+}
+
+// Streamer: hand the stage over. The grant goes first, because the room needs it
+// to free the seat; then sharing stops and this tab re-joins the same room as a
+// viewer, so the host keeps watching.
+async function grantStage() {
+  const target = pendingHandoffFrom;
+  hideHandoffPrompt();
+  if (!target) return;
+  const room = roomId || roomFromUrl;
+  signal({ type: "handoff-grant", to: target });
+  log(t("log.stageGranted", { peer: peerLabel(target) }));
+  stopSharing();
+  if (room) await demoteToViewer(room);
+}
+
+function declineStage() {
+  const target = pendingHandoffFrom;
+  hideHandoffPrompt();
+  if (!target) return;
+  signal({ type: "handoff-deny", to: target });
+  log(t("log.stageDeclined", { peer: peerLabel(target) }));
+}
+
+// Viewer: the host agreed. Promote this tab and publish the stream captured when
+// the request was made.
+async function acceptStage() {
+  const pending = stageRequest;
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  stageRequest = null;
+  const room = signalingRoom || roomFromUrl;
+  if (!room) {
+    pending.stream.getTracks().forEach((tr) => tr.stop());
+    return;
+  }
+  await becomeStreamer(pending.stream, room);
+}
+
+async function becomeStreamer(stream, room) {
+  closeAllConns(); // drop the viewer-side connection to the old presenter
+  ROLE = "streamer";
+  roomFromUrl = room;
+  roomId = room;
+  localStream = stream;
+  $("roomId").value = room;
+  $("roomId").disabled = true;
+  $("preferAv1").disabled = true;
+  $("shareAudio").disabled = true;
+  $("startBtn").disabled = true;
+  $("stopBtn").disabled = false;
+  const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (videoTrack) {
+    applyContentHint(videoTrack, preset.contentHint);
+    videoTrack.addEventListener("ended", () => {
+      log(t("log.captureEnded"), "warn");
+      stopSharing();
+    });
+  }
+  const video = $("video");
+  video.srcObject = localStream;
+  video.muted = true;
+  setVideoActive(true);
+  applyStreamerUI();
+  $("role").textContent = t("role.host");
+  const subtitle = $("subtitle");
+  if (subtitle) subtitle.textContent = t("sub.host");
+  showRoomLink();
+  requestWakeLock();
+  clearAlert();
+  hideHandoffPrompt();
+  log(t("log.becameStreamer", { room }));
+  // The viewer socket has to go first: leaving it open would register this tab as
+  // a viewer of the room it is about to present to.
+  dropSignalingSocket();
+  try {
+    await connectSignaling(room, "streamer");
+  } catch (e) {
+    log(e.message, "bad");
+    showAlert(e.message, "bad");
+    stopSharing();
+    await demoteToViewer(room);
+  }
+}
+
+// The old presenter keeps watching the room it just handed over — same link, no
+// reload.
+async function demoteToViewer(room) {
+  ROLE = "viewer";
+  roomFromUrl = room;
+  applyViewerUI();
+  $("role").textContent = t("role.viewer", { room });
+  const subtitle = $("subtitle");
+  if (subtitle) subtitle.textContent = t("sub.viewer");
+  setTakeStageAvailable(false);
+  showWaiting();
+  showAlert(t("alert.stageHandedOff"), "warn");
+  await joinRoom();
+}
+
+// Close the signaling socket without letting its close handler reconnect; used
+// while the same tab switches roles.
+function dropSignalingSocket() {
+  stopReconnecting();
+  if (!ws) return;
+  const old = ws;
+  ws = null;
+  old.onopen = old.onclose = old.onmessage = old.onerror = null;
+  try { old.close(); } catch { /* already closed */ }
+}
+
 // Keep the screen awake while a stream is live (hosting or watching) so a phone
 // or laptop does not sleep mid-session. The browser drops the lock when the tab
 // is hidden, so it is re-acquired when the tab becomes visible again.
@@ -1983,90 +2252,62 @@ function init() {
     syncVolumeUI();
   });
 
-  if (ROLE === "streamer") {
-    setVideoActive(false);
-    $("startBtn").addEventListener("click", startSharing);
-    $("stopBtn").addEventListener("click", stopSharing);
+  // Quality presets are built for both roles: a viewer handed the stage later
+  // needs the picker ready, and the room preset is what its senders will use.
+  const qsel = $("quality");
+  for (const [key, p] of Object.entries(QUALITY_PRESETS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = t(p.shortKey);
+    opt.title = t(p.labelKey);
+    qsel.appendChild(opt);
+  }
+  const prefs = loadPrefs();
+  qsel.value = QUALITY_PRESETS[prefs.quality] ? prefs.quality : "1080p60";
+  if (typeof prefs.preferAv1 === "boolean") $("preferAv1").checked = prefs.preferAv1;
+  if (typeof prefs.shareAudio === "boolean") $("shareAudio").checked = prefs.shareAudio;
+  qsel.addEventListener("change", () => savePrefs({ quality: qsel.value }));
+  $("preferAv1").addEventListener("change", () => savePrefs({ preferAv1: $("preferAv1").checked }));
+  $("shareAudio").addEventListener("change", () => savePrefs({ shareAudio: $("shareAudio").checked }));
 
+  // Controls are wired for both roles; a handoff can flip them at runtime, and
+  // the ones that do not apply to a viewer stay hidden.
+  $("startBtn").addEventListener("click", startSharing);
+  $("stopBtn").addEventListener("click", stopSharing);
+  $("randomRoomBtn").addEventListener("click", () => {
+    $("roomId").value = randomRoomId();
+    clearAlert();
+  });
+  $("peerQualitySelect").addEventListener("change", async (e) => {
+    if (!focusedId) return;
+    const value = e.target.value;
+    if (QUALITY_PRESETS[value]) perViewerQuality.set(focusedId, value);
+    else perViewerQuality.delete(focusedId);
+    const key = qualityKeyFor(focusedId);
+    const conn = conns.get(focusedId);
+    if (conn) {
+      for (const sender of conn.pc.getSenders()) {
+        if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, key);
+      }
+    }
+    log(t("log.peerQuality", { peer: peerLabel(focusedId), label: presetLabel(key) }));
+  });
+  $("takeStageBtn").addEventListener("click", requestStage);
+  $("handoffAccept").addEventListener("click", grantStage);
+  $("handoffDecline").addEventListener("click", declineStage);
+
+  setupPip();
+
+  if (ROLE === "streamer") {
     // Remember the last room ID so the streamer keeps the same link.
     let savedRoom = "";
     try { savedRoom = localStorage.getItem(ROOM_STORAGE_KEY) || ""; } catch { /* storage unavailable */ }
     $("roomId").value = savedRoom;
-    $("randomRoomBtn").addEventListener("click", () => {
-      $("roomId").value = randomRoomId();
-      clearAlert();
-    });
-
-    const qsel = $("quality");
-    for (const [key, p] of Object.entries(QUALITY_PRESETS)) {
-      const opt = document.createElement("option");
-      opt.value = key;
-      opt.textContent = t(p.shortKey);
-      opt.title = t(p.labelKey);
-      qsel.appendChild(opt);
-    }
-    const prefs = loadPrefs();
-    qsel.value = QUALITY_PRESETS[prefs.quality] ? prefs.quality : "1080p60";
-    if (typeof prefs.preferAv1 === "boolean") $("preferAv1").checked = prefs.preferAv1;
-    if (typeof prefs.shareAudio === "boolean") $("shareAudio").checked = prefs.shareAudio;
-    qsel.addEventListener("change", () => savePrefs({ quality: qsel.value }));
-    $("preferAv1").addEventListener("change", () => savePrefs({ preferAv1: $("preferAv1").checked }));
-    $("shareAudio").addEventListener("change", () => savePrefs({ shareAudio: $("shareAudio").checked }));
-    setField("dQuality", presetLabel());
-    $("dViewersLabel").hidden = false;
-    $("dViewers").hidden = false;
-    $("dUploadLabel").hidden = false;
-    $("dUpload").hidden = false;
-    $("dPeerLabel").hidden = false;
-    $("dPeer").hidden = false;
-    $("dQualityLabel").hidden = false;
-    $("dQuality").hidden = false;
-    updatePeerSelect();
-    $("peerQualitySelect").addEventListener("change", async (e) => {
-      if (!focusedId) return;
-      const value = e.target.value;
-      if (QUALITY_PRESETS[value]) perViewerQuality.set(focusedId, value);
-      else perViewerQuality.delete(focusedId);
-      const key = qualityKeyFor(focusedId);
-      const conn = conns.get(focusedId);
-      if (conn) {
-        for (const sender of conn.pc.getSenders()) {
-          if (sender.track && sender.track.kind === "video") await applyQualityToSender(sender, key);
-        }
-      }
-      log(t("log.peerQuality", { peer: peerLabel(focusedId), label: presetLabel(key) }));
-    });
+    setVideoActive(false);
+    applyStreamerUI();
   } else {
-    document.querySelectorAll(".streamer-only").forEach((el) => { el.hidden = true; });
-    $("startBtn").hidden = true;
-    $("stopBtn").hidden = true;
-    const pref = $("preferAv1");
-    if (pref) {
-      const wrap = pref.closest(".check-pill, label");
-      if (wrap) wrap.hidden = true;
-    }
-    $("dViewersLabel").hidden = true;
-    $("dViewers").hidden = true;
-    $("dUploadLabel").hidden = true;
-    $("dUpload").hidden = true;
-    $("dPeerLabel").hidden = true;
-    $("dPeer").hidden = true;
-    $("dQualityLabel").hidden = true;
-    $("dQuality").hidden = true;
-    // Picture-in-picture, only where the browser supports it.
-    const videoEl = $("video");
-    if (typeof videoEl.requestPictureInPicture === "function" && document.pictureInPictureEnabled) {
-      $("viewerControls").hidden = false;
-      $("pipBtn").addEventListener("click", async () => {
-        try {
-          if (document.pictureInPictureElement) await document.exitPictureInPicture();
-          else await videoEl.requestPictureInPicture();
-        } catch { /* not allowed until a video is playing */ }
-      });
-      videoEl.addEventListener("enterpictureinpicture", () => { $("pipLabel").textContent = t("app.exitPip"); });
-      videoEl.addEventListener("leavepictureinpicture", () => { $("pipLabel").textContent = t("app.pip"); });
-    }
     setVideoActive(false, true);
+    applyViewerUI();
     joinRoom();
   }
   window.addEventListener("beforeunload", () => { releaseWakeLock(); stopReconnecting(); if (ws) ws.close(); });

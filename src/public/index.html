@@ -78,6 +78,10 @@
           <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1"/></svg>
           <span id="pipLabel" data-i18n="app.pip">Picture-in-picture</span>
         </button>
+        <button id="takeStageBtn" class="btn-ghost" type="button" hidden data-i18n-title="handoff.takeStageHint" title="Ask the host to present your screen">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="12" rx="2"/><path d="M12 12v7"></path><path d="m8 16 4-4 4 4"></path></svg>
+          <span data-i18n="handoff.takeStage">Take the stage</span>
+        </button>
       </div>
     </section>
 
@@ -102,6 +106,14 @@
     </section>
 
     <div id="alert" class="alert" role="alert" hidden></div>
+
+    <div id="handoffPrompt" class="alert warn" role="alertdialog" aria-labelledby="handoffText" hidden>
+      <span id="handoffText"></span>
+      <div class="handoff-actions">
+        <button id="handoffAccept" class="primary" type="button" data-i18n="handoff.accept">Let them present</button>
+        <button id="handoffDecline" class="btn-ghost" type="button" data-i18n="handoff.decline">Not now</button>
+      </div>
+    </div>
 
     <div id="audioHint" class="audio-hint" hidden>
       <span data-i18n="app.audioHint">🔊 Stream audio available — starts muted by browser. Click to unmute.</span>

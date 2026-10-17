@@ -294,6 +294,47 @@ export class Room {
         if (role !== "viewer") return;
         this.relayToStreamer({ type: "renegotiate", from: this.attachment(ws)?.peerId });
         break;
+      case "handoff-request":
+        // A viewer offers to present. The streamer decides; nothing changes
+        // until it answers with handoff-grant/handoff-deny.
+        if (role !== "viewer") return;
+        this.relayToStreamer({ type: "handoff-request", from: this.attachment(ws)?.peerId });
+        break;
+      case "handoff-deny":
+        if (role !== "streamer") return;
+        this.relayToViewer(msg.to, { type: "handoff-deny" });
+        break;
+      case "handoff-grant": {
+        if (role !== "streamer") return;
+        const requester = this.socketsWithRole("viewer").find((v) => this.attachment(v)?.peerId === msg.to);
+        if (!requester) {
+          this.send(ws, { type: "error", code: "handoff-missing", message: "That viewer is no longer in the room." });
+          return;
+        }
+        // Move the stage. Both participants retire their current seat at once:
+        // the outgoing streamer so the requester can take the streamer role
+        // without hitting "room in use" (its socket can linger a moment past the
+        // client's close), and the requester so the new streamer does not offer
+        // to its own lingering viewer socket. The other viewers are told to
+        // rebuild: a new presenter means new ICE credentials and a new DTLS
+        // fingerprint, which cannot be applied to the old peer connection.
+        for (const out of [ws, requester]) {
+          const a = this.attachment(out);
+          if (a) {
+            a.role = "leaving";
+            try {
+              out.serializeAttachment(a);
+            } catch {
+              /* socket already closed */
+            }
+          }
+        }
+        for (const viewer of this.socketsWithRole("viewer", requester)) {
+          this.send(viewer, { type: "peer-reset" });
+        }
+        this.send(requester, { type: "handoff-grant" });
+        break;
+      }
       default:
         this.send(ws, { type: "error", code: "unknown-type", message: "Unknown message type" });
     }
