@@ -61,13 +61,14 @@ domain, delete the `routes` entry and deploy to `golive.<account>.workers.dev`.
    (`aria-live`). Viewers can also pop the stream out into **picture-in-picture**
    where the browser supports it. If the room has a PIN, the player is covered by
    a PIN prompt until the right code is entered (a wrong one says so and stays).
-4. **Squad** (`/squad`) watches several rooms at once: type a room code (or paste
-   a `/watch/…` link) and each room opens as a tile — the normal viewer page in
-   embed mode (`?embed=1`) inside an iframe, so signaling and media are unchanged
-   and each room is still one direct P2P connection. The list is kept in the URL
-   hash (`/squad#a,b,c`), so a whole squad is a single shareable link, and only
-   one tile plays sound at a time (its speaker button picks it). The tiles are
-   independent; the real cost is the viewer's CPU and bandwidth, not the server's.
+4. **One page, many rooms** (`/host`, `/watch/<id>`, `/squad` all serve the same
+   shell). Every room is a native panel — no iframes — driven by its own
+   `createRoom()` engine, so you can host and watch several rooms at once. Add a
+   room with a code (or paste a `/watch/…` link); drag the splitters between
+   panels to resize them (the layout is remembered in `localStorage`, and
+   `/squad` restores it). Each room is still one direct P2P connection; only one
+   panel plays sound at a time (its speaker button picks it). The per-panel
+   controls keep a live/waiting badge, fullscreen, open-in-a-new-tab and remove.
 
 Shared links get a **link preview** (Open Graph/Twitter): the worker fills the
 meta tags per route, so `/watch/<id>` previews as “Golive — assistir à sala
@@ -248,16 +249,18 @@ Before starting, the streamer chooses:
   PIN on every reconnect; leaving the field empty clears it. It is a second
   factor on top of the link, not an account: anyone who has both the link and
   the PIN gets in, and the link itself is still the real secret.
-- **Squad (multi-stream)**: `/squad` is a thin shell — each room is the ordinary  viewer page loaded with `?embed=1` in an iframe, so nothing in the signaling or
-  media path changes and it stays direct P2P (one connection per room, not a
-  mesh). The shell only owns the grid and the audio routing: it posts
-  `{type:"audio"}` messages into each tile, and each tile posts
-  `{type:"state", state:"live"|"waiting"}` back so the grid can badge it. An
-  inline head script adds the `embed` class before first paint and CSS hides the
-  chrome, so the video fills the tile without a flash; the tile keeps its own
-  reconnect, handoff and diagnostics logic untouched. The realistic limit (2–4
-  streams, more on a strong machine) is decode CPU and bandwidth on the viewer,
-  not the Durable Object.
+- **One page, many rooms**: `/host`, `/watch/<id>` and `/squad` all serve the same
+  shell (`index.html` + `shell.js` + `room.js`). A room is a panel built from a
+  `<template>`, and each panel gets its own `createRoom()` instance; element
+  lookups go through a per-panel `data-el` map instead of `document` ids, so any
+  number of rooms can run side by side. Signaling and media are unchanged — each
+  room is still one direct P2P connection, not a mesh/SFU. The shell owns the
+  header, toolbar, log, diagnostics, QR and report flow, and lays panels out in a
+  grid of columns with draggable splitters (weights saved in `localStorage`).
+  Panels report their log/diagnostics/state back through callbacks, so the
+  selected room's table and the live/waiting badge stay in sync. The realistic
+  limit (2–4 streams, more on a strong machine) is decode CPU and bandwidth on
+  the viewer, not the Durable Object.
 - Candidate logs show type and address family only; IP addresses are never
   displayed or stored. Anyone with the room link can join, so don't share
   private content.
@@ -265,9 +268,10 @@ Before starting, the streamer chooses:
 
 - `worker.js` - Worker routing + the `Room` Durable Object (signaling)
 - `wrangler.jsonc` - Cloudflare Worker, assets, DO and domain configuration
-- `public/index.html`, `public/app.js`, `public/style.css` - host/viewer app shell
+- `public/index.html` - unified app shell (host/viewer/multi-room), `public/shell.js`
+  - panel grid + global chrome, `public/room.js` - per-room engine (signaling, P2P)
+- `public/style.css` - all styling, including the shell layout and splitters
 - `public/home.html` - landing page at `/` (Host or Watch)
-- `public/squad.html`, `public/squad.js` - multistream console at `/squad` (tiles + audio)
 - `public/i18n.js` - pt-BR / en translations (no build step)
 - `public/qr.js` - dependency-free QR encoder (room link as a scannable code)
 - `public/report.js` - shareable "Report a bug" flow (clipboard + Discord/GitHub)
