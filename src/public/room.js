@@ -36,7 +36,7 @@ const RTC_CONFIG = {
 // Opus tuning for shared tab/system audio. Opus is negotiated through SDP, not
 // setParameters, so `preferOpus()` edits the offer's fmtp line. The default cap
 // is only ~32 kbps; this raises it and keeps music from collapsing to mono.
-const OPUS_MAX_BITRATE = 128_000;
+const OPUS_MAX_BITRATE = 192_000;
 const OPUS_STEREO = true;
 
 // The viewer only ever talks to one streamer, so it uses a single fixed key.
@@ -823,6 +823,7 @@ function createPc(peerId) {
   const conn = {
     pc: new RTCPeerConnection(RTC_CONFIG),
     pending: [],
+    mediaStream: null,
     prevBytes: null,
     prevAudioBytes: null,
     warnedCodec: false,
@@ -866,21 +867,31 @@ function createPc(peerId) {
     if (peerId === focusedId) setField("dPc", pc.connectionState);
   };
   pc.ontrack = (e) => {
-    const stream = e.streams[0] || new MediaStream([e.track]);
     const video = $("video");
-    video.srcObject = stream;
-    // Start muted so autoplay is allowed; the viewer unmutes with the
-    // video controls' speaker icon or the unmute banner. Once playback has
-    // actually started, restore the saved volume/mute. An embedded tile never
-    // restores a saved state: the console decides whether it has sound.
-    const prefs = EMBED ? { volume: 1, muted: true } : loadAudioPrefs();
-    applyAudioState(video, { volume: prefs.volume, muted: true });
-    const playing = video.play();
-    if (playing && typeof playing.then === "function") {
-      playing
-        .then(() => { if (!EMBED && !prefs.muted) video.muted = false; checkAudioHint(); })
-        .catch(() => { });
+    // Tracks are announced one at a time (video, then audio). Reassigning
+    // srcObject and re-applying "start muted" on the audio event restarted
+    // playback and re-muted a viewer that had already unmuted, so attach the
+    // stream once per connection and only set the initial state there.
+    let stream = conn.mediaStream;
+    if (!stream) {
+      stream = e.streams[0] || new MediaStream();
+      conn.mediaStream = stream;
+      video.srcObject = stream;
+      // Start muted so autoplay is allowed; the viewer unmutes with the
+      // video controls' speaker icon or the unmute banner. Once playback has
+      // actually started, restore the saved volume/mute. An embedded tile never
+      // restores a saved state: the console decides whether it has sound.
+      const prefs = EMBED ? { volume: 1, muted: true } : loadAudioPrefs();
+      applyAudioState(video, { volume: prefs.volume, muted: true });
+      const playing = video.play();
+      if (playing && typeof playing.then === "function") {
+        playing
+          .then(() => { if (!EMBED && !prefs.muted) video.muted = false; checkAudioHint(); })
+          .catch(() => { });
+      }
     }
+    // Covers a shared stream, a per-track stream, or no stream id at all.
+    if (!stream.getTracks().includes(e.track)) stream.addTrack(e.track);
     setVideoActive(true);
     checkAudioHint();
     state("live");
@@ -1225,6 +1236,10 @@ async function doIceRestart(peerId) {
   try {
     conn.pc.restartIce();
     const offer = await conn.pc.createOffer({ iceRestart: true });
+    // A fresh offer is generated from the browser defaults, so re-apply the Opus
+    // parameters or audio would silently fall back to ~32 kbps mono after an
+    // ICE restart.
+    if (localStream && localStream.getAudioTracks().length) offer.sdp = preferOpus(offer.sdp);
     await conn.pc.setLocalDescription(offer);
     signal(makeSignal("offer", peerId, conn.pc.localDescription.toJSON()));
     log(t("log.iceRestart", { peer: peerLabel(peerId), attempt: conn.iceRestarts }), "warn");
@@ -1283,10 +1298,16 @@ function preferOpus(sdp) {
     }
   }
   params.set("maxaveragebitrate", String(OPUS_MAX_BITRATE));
-  // In-band FEC lets audio survive packet loss (common on Wi-Fi), and DTX stops
-  // sending during silence, which matters when each viewer is its own stream.
+  // Advertise full-band output. Without this Opus defaults to a 24 kHz playback
+  // ceiling, which dulls music and system audio even when the source is 48 kHz.
+  params.set("maxplaybackrate", "48000");
+  params.set("sprop-maxcapturerate", "48000");
+  // In-band FEC lets audio survive packet loss (common on Wi-Fi).
   params.set("useinbandfec", "1");
-  params.set("usedtx", "1");
+  // Keep DTX off. Silence suppression clips the beginning of sounds and makes
+  // music/game audio sound choppy; audio is a tiny fraction of the stream, so
+  // the saved bandwidth is not worth the artifacts.
+  params.set("usedtx", "0");
   if (OPUS_STEREO) {
     params.set("stereo", "1");
     params.set("sprop-stereo", "1");
@@ -1708,19 +1729,45 @@ function resolveRoomId() {
 async function getDisplayStream(fps, wantAudio) {
   const video = { frameRate: fps };
   if (!wantAudio) return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
+
+  // Screen/tab audio is usually music or game sound, not a voice call. Turn off
+  // the browser's voice processing (which pumps levels and strips frequencies)
+  // and ask for the native 48 kHz stereo instead.
+  const audio = {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    sampleRate: 48000,
+    channelCount: 2,
+  };
+  const constraintError = (err) =>
+    err && (err.name === "TypeError" || err.name === "NotSupportedError" || err.name === "OverconstrainedError");
+
   try {
     return await navigator.mediaDevices.getDisplayMedia({
       video,
-      audio: true,
+      audio,
       systemAudio: "include", // offer system audio (screens) where possible
       windowAudio: "window",  // window shares: only the picked window's audio
     });
   } catch (e) {
-    if (e && (e.name === "TypeError" || e.name === "NotSupportedError")) {
-      log(t("log.audioRejected", { name: e.name }), "warn");
-      return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
-    }
-    throw e;
+    if (!constraintError(e)) throw e;
+    log(t("log.audioRejected", { name: e.name }), "warn");
+  }
+
+  // Retry with plain audio: some browsers reject the processing constraints but
+  // can still share audio. Only then fall back to video-only.
+  try {
+    return await navigator.mediaDevices.getDisplayMedia({
+      video,
+      audio: true,
+      systemAudio: "include",
+      windowAudio: "window",
+    });
+  } catch (e) {
+    if (!constraintError(e)) throw e;
+    log(t("log.audioRejected", { name: e.name }), "warn");
+    return navigator.mediaDevices.getDisplayMedia({ video, audio: false });
   }
 }
 
@@ -1759,6 +1806,11 @@ async function startSharing() {
     return;
   }
   const audioTracks = localStream.getAudioTracks();
+  // Tell the encoder this is music, not speech: it keeps Opus from treating the
+  // stream as a voice call (and complements the SDP tuning done per viewer).
+  if (audioTracks[0]) {
+    try { audioTracks[0].contentHint = "music"; } catch { /* unsupported */ }
+  }
   if (wantAudio && audioTracks.length === 0) {
     log(t("log.noAudioTrack"), "warn");
   } else if (audioTracks.length) {

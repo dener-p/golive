@@ -97,7 +97,7 @@ link** action. - Video element for the local preview and remote
 stream. - Streamer options for **Prefer AV1**, **Share audio**, and a video
 **Quality** preset (4K/60fps, 4K/30fps, 1440p/60fps, 1080p/60fps,
 1080p/30fps, 720p/30fps, Data saver, Auto) applied to each viewer's sender,
-with Opus audio lifted to 128 kbps stereo. - Viewer unmutes audio via the video controls'
+with Opus audio lifted to 192 kbps full-band stereo. - Viewer unmutes audio via the video controls'
 speaker icon (audio starts muted for autoplay-policy reasons). - On the
 streamer, a **Connected viewers** count and a **Diagnostics for**
 selector to inspect one viewer's connection. - Connection state: `new`, `checking`,

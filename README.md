@@ -16,7 +16,7 @@ ever passes through Cloudflare.
   streamer is not live yet they wait and connect automatically when it starts.
   Up to `MAX_VIEWERS` (default 8) devices can watch at once, and the viewer UI
   hides the host controls.
-- Optional tab/system **audio**, best effort, lifted to 128 kbps stereo Opus.
+- Optional tab/system **audio**, best effort, lifted to 192 kbps full-band stereo Opus.
 - **Portuguese (pt-BR)** by default, with **English**; the browser language is
   detected and a header picker remembers your choice.
 - **Quality** presets: 4K/60, 4K/30, 1440p/60, 1080p/60, 1080p/30,

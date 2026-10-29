@@ -157,11 +157,16 @@ Before starting, the streamer chooses:
   connection is `disconnected` or `failed`, the diagnostics panel also offers a
   **Reconnect** button: the streamer forces an ICE restart past the automatic
   cap, and a viewer immediately re-opens signaling for a brand-new connection.
-- **Audio** comes from the display stream (`getDisplayMedia({ audio: true })`)
-  on its own transceiver using Opus. The offer's Opus `fmtp` is edited
-  (`preferOpus()`) to raise `maxaveragebitrate` to 128 kbps, request stereo and
-  turn on in-band FEC (`useinbandfec=1`) plus silence suppression (`usedtx=1`),
-  since the browser default is only ~32 kbps and loss is common on Wi-Fi. Best effort and source-dependent:
+- **Audio** comes from the display stream (`getDisplayMedia`) on its own
+  transceiver using Opus. Capture disables the browser's voice processing (echo
+  cancellation, noise suppression, auto gain) and asks for 48 kHz stereo, so
+  tab/system music is not pumped or muffled. The offer's Opus `fmtp` is edited
+  (`preferOpus()`) to raise `maxaveragebitrate` to 192 kbps, advertise full-band
+  48 kHz stereo (`maxplaybackrate`/`sprop-maxcapturerate`), and enable in-band
+  FEC (`useinbandfec=1`). Silence suppression stays off (`usedtx=0`) because
+  DTX clips the start of sounds and makes music choppy. The same parameters are
+  re-applied on ICE-restart offers, otherwise audio would fall back to the
+  browser's ~32 kbps mono defaults after a reconnect. Best effort and source-dependent:
   - **Chrome tab** - carries the tab's audio on all platforms.
   - **Entire screen** - carries system audio (Windows/ChromeOS; macOS 14.2+).
   - **Window** - carries only the picked window's audio where the browser
