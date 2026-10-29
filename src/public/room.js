@@ -311,22 +311,112 @@ function iceClass(s) {
 
 // ---------- Codec support ----------
 
+const AV1_MIME = "video/AV1";
+let av1CanShare = true;
+let supportSeq = 0;
+
 function hasAv1(caps) {
   return !!caps && caps.codecs.some((c) => c.mimeType.toLowerCase() === "video/av1");
 }
 
-function reportSupport() {
+function setAv1Hint(text, cls = "") {
+  const hint = $("av1Hint");
+  if (!hint) return;
+  hint.hidden = !text;
+  hint.textContent = text;
+  hint.className = "av1-hint" + (cls ? " " + cls : "");
+}
+
+// getCapabilities() only lists codecs the browser knows about. encodingInfo()
+// asks whether it can actually encode AV1 at the chosen resolution/framerate and
+// whether that encoder is efficient; browsers without WebRTC encodingInfo return
+// null and the UI falls back to "efficiency unknown".
+async function probeAv1Encode(presetKey) {
+  const mc = navigator.mediaCapabilities;
+  if (!mc || typeof mc.encodingInfo !== "function") return null;
+  const preset = QUALITY_PRESETS[presetKey] || QUALITY_PRESETS["1080p60"];
+  const dpr = window.devicePixelRatio || 1;
+  const nativeW = Math.max(640, Math.round((window.screen?.width || 1920) * dpr));
+  const nativeH = Math.max(360, Math.round((window.screen?.height || 1080) * dpr));
+  const height = preset.targetHeight || Math.min(2160, nativeH);
+  const width = preset.targetHeight ? Math.round((height * 16) / 9) : Math.min(4096, nativeW);
+  const framerate = preset.maxFramerate || preset.captureFps || 60;
+  const bitrate = preset.maxBitrate || 8_000_000;
+  try {
+    return await mc.encodingInfo({
+      type: "webrtc",
+      video: { contentType: AV1_MIME, width, height, bitrate, framerate },
+    });
+  } catch {
+    return null;
+  }
+}
+
+function av1ShareStatus(info) {
+  if (!info || typeof info.supported !== "boolean") {
+    return { key: "support.av1ShareUnknown", cls: "warn", canShare: true };
+  }
+  if (!info.supported) {
+    return { key: "support.av1ShareNo", cls: "bad", canShare: false };
+  }
+  if (info.powerEfficient) {
+    return { key: "support.av1ShareHw", cls: "ok", canShare: true };
+  }
+  if (info.smooth === false) {
+    return { key: "support.av1ShareSwSlow", cls: "warn", canShare: true };
+  }
+  return { key: "support.av1ShareSw", cls: "warn", canShare: true };
+}
+
+function renderSupport(send, recv, info) {
+  const isStreamer = ROLE === "streamer";
+  let relevant = isStreamer ? send : recv;
+  let text = `${t("support.send")}: ${t(send ? "support.yes" : "support.no")}, ${t("support.receive")}: ${t(recv ? "support.yes" : "support.no")}`;
+
+  if (isStreamer) {
+    const status = send
+      ? av1ShareStatus(info)
+      : { key: "support.av1ShareNo", cls: "bad", canShare: false };
+    const label = t(status.key);
+    text += ` · ${t("support.av1Share")}: ${label}`;
+    setAv1Hint(label, status.cls);
+    av1CanShare = status.canShare;
+    relevant = send && status.canShare;
+    const pref = $("preferAv1");
+    if (pref) {
+      pref.disabled = !av1CanShare || !!localStream;
+      if (!av1CanShare) pref.checked = false;
+      else if (!pref.disabled) pref.checked = loadPrefs().preferAv1 !== false;
+    }
+    if (!av1CanShare) {
+      log(t(send ? "log.av1EncodeUnavailable" : "log.av1UnavailableSend"), "warn");
+    }
+  } else {
+    setAv1Hint("", "");
+    av1CanShare = true;
+  }
+
+  setField("dSupport", text, relevant ? "ok" : "warn");
+}
+
+async function reportSupport() {
+  const seq = ++supportSeq;
   try {
     const send = hasAv1(RTCRtpSender.getCapabilities("video"));
     const recv = hasAv1(RTCRtpReceiver.getCapabilities("video"));
-    const text = `${t("support.send")}: ${t(send ? "support.yes" : "support.no")}, ${t("support.receive")}: ${t(recv ? "support.yes" : "support.no")}`;
-    const relevant = ROLE === "streamer" ? send : recv;
-    setField("dSupport", text, relevant ? "ok" : "warn");
-    if (!relevant) {
-      log(t(ROLE === "streamer" ? "log.av1UnavailableSend" : "log.av1UnavailableRecv"), "warn");
+    // Disable a missing sender immediately; only a supported sender waits for
+    // the async encoding probe.
+    if (ROLE !== "streamer" || !send) {
+      if (seq === supportSeq) renderSupport(send, recv, null);
+      return;
     }
+    const info = await probeAv1Encode(currentPresetKey());
+    if (seq !== supportSeq) return;
+    renderSupport(send, recv, info);
   } catch (e) {
+    if (seq !== supportSeq) return;
     setField("dSupport", t("support.unknown"), "warn");
+    setAv1Hint("", "");
   }
 }
 
@@ -1870,7 +1960,7 @@ function stopSharing() {
   $("linkRow").hidden = true;
   $("startBtn").disabled = false;
   $("stopBtn").disabled = true;
-  $("preferAv1").disabled = false;
+  $("preferAv1").disabled = !av1CanShare;
   $("shareAudio").disabled = false;
   $("roomId").disabled = false;
   if ($("roomPin")) $("roomPin").disabled = false;
@@ -1911,6 +2001,7 @@ function applyStreamerUI() {
   updatePeerSelect();
   updateViewerCount();
   checkAudioHint(); // the local preview is muted; hide any viewer unmute prompt
+  reportSupport();
 }
 
 function applyViewerUI() {
@@ -1925,6 +2016,7 @@ function applyViewerUI() {
   }
   for (const id of STREAMER_STAT_FIELDS) { const el = $(id); if (el) el.hidden = true; }
   updatePeerQuality();
+  reportSupport();
 }
 
 // Picture-in-picture, only where the browser supports it. Wired once; the
@@ -2174,7 +2266,6 @@ function toggleVideoMute() {
 // ---------- Init ----------
 
 function init() {
-  reportSupport();
   // Start muted so autoplay is permitted; viewers opt into audio via the video
   // controls' speaker icon. The host preview always stays muted, while a
   // viewer's saved volume/mute is applied (unmuted is restored after playback).
@@ -2187,6 +2278,7 @@ function init() {
   $("quality").addEventListener("change", async () => {
     setField("dQuality", presetLabel());
     updatePeerQuality();
+    if (ROLE === "streamer") reportSupport(); // AV1 encoding depends on the preset
     const preset = QUALITY_PRESETS[currentPresetKey()] || QUALITY_PRESETS["1080p60"];
     if (localStream && preset.captureFps) {
       const vTrack = localStream.getVideoTracks()[0];

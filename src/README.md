@@ -131,9 +131,14 @@ Before starting, the streamer chooses:
   encoder) per viewer, so upload bandwidth scales with viewer count. Each
   viewer gets a short `peerId`; the streamer's diagnostics dropdown picks which
   viewer to inspect.
-- **AV1** is put first via `setCodecPreferences()` only when
-  `getCapabilities("video")` reports it; every other codec (including RTX)
-  stays as a fallback. The UI shows the codec that was *actually* negotiated.
+- **AV1** is put first via `setCodecPreferences()` only when the matching
+  `RTCRtpSender`/`RTCRtpReceiver` `getCapabilities("video")` reports it; every
+  other codec (including RTX) stays as a fallback. Diagnostics show send and
+  receive separately, and the host's **Prefer AV1** pill gets a live encode
+  status from `mediaCapabilities.encodingInfo()` (hardware / software / may lag
+  / unavailable) for the current preset. If the browser lists AV1 but cannot
+  encode it, the checkbox is disabled instead of pretending it will be used.
+  The UI shows the codec that was *actually* negotiated after connecting.
 - **ICE** uses STUN only (**no TURN**): Google's two servers plus Cloudflare's
   dual-stack one, and an `iceCandidatePoolSize` so candidates are ready before
   the first offer. The redundancy means one blocked STUN does not cost us

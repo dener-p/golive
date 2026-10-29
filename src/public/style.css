@@ -282,6 +282,25 @@ button.copied {
   cursor: pointer;
 }
 
+/* Inline AV1 encode status next to the Prefer AV1 pill. */
+.check-pill .av1-hint {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.check-pill .av1-hint.ok {
+  color: var(--ok);
+}
+
+.check-pill .av1-hint.warn {
+  color: var(--warn);
+}
+
+.check-pill .av1-hint.bad {
+  color: var(--bad);
+}
+
 /* Select Fields (Quality, FPS, Peer) */
 .select-field {
   display: inline-flex;
