@@ -327,6 +327,49 @@ function setAv1Hint(text, cls = "") {
   hint.className = "av1-hint" + (cls ? " " + cls : "");
 }
 
+let lastActualHint = "";
+
+// Classify the encoder Chrome actually ran. powerEfficientEncoder is Chrome's
+// own verdict and is more reliable than the name; fall back to known software
+// implementations when the boolean is absent.
+function classifyEncoder(impl, powerEfficient) {
+  if (powerEfficient === true) return "hw";
+  if (powerEfficient === false) return "sw";
+  const s = (impl || "").toLowerCase();
+  if (!s) return "unknown";
+  if (/libaom|svt|rav1e|aom|libvpx|openh264/.test(s)) return "sw";
+  if (/external|hardware|mediafoundation|vaapi|videotoolbox|d3d|nvenc|nvidia|amf|qsv|intel|amd|gpu/.test(s)) return "hw";
+  return "unknown";
+}
+
+// Once a stream is running, replace the pre-flight guess with the encoder name
+// from getStats(). This is the only authoritative answer to "is it really
+// hardware?", because Chrome may list AV1 while still using libaom.
+function noteActualEncoder(mime, impl, powerEfficient) {
+  if (ROLE !== "streamer" || !impl) return;
+  let text;
+  let cls = "";
+  if (!/^video\/av1$/i.test(mime || "")) {
+    text = t("support.av1ActualFallback", { codec: mime || "?" });
+    cls = $("preferAv1").checked ? "warn" : "";
+  } else {
+    const kind = classifyEncoder(impl, powerEfficient);
+    if (kind === "hw") {
+      text = t("support.av1ActualHw", { impl });
+      cls = "ok";
+    } else if (kind === "sw") {
+      text = t("support.av1ActualSw", { impl });
+      cls = "warn";
+    } else {
+      text = t("support.av1ActualUnknown", { impl });
+      cls = "warn";
+    }
+  }
+  if (text === lastActualHint) return;
+  lastActualHint = text;
+  setAv1Hint(text, cls);
+}
+
 // getCapabilities() only lists codecs the browser knows about. encodingInfo()
 // asks whether it can actually encode AV1 at the chosen resolution/framerate and
 // whether that encoder is efficient; browsers without WebRTC encodingInfo return
@@ -379,6 +422,7 @@ function renderSupport(send, recv, info) {
       : { key: "support.av1ShareNo", cls: "bad", canShare: false };
     const label = t(status.key);
     text += ` · ${t("support.av1Share")}: ${label}`;
+    lastActualHint = "";
     setAv1Hint(label, status.cls);
     av1CanShare = status.canShare;
     relevant = send && status.canShare;
@@ -392,6 +436,7 @@ function renderSupport(send, recv, info) {
       log(t(send ? "log.av1EncodeUnavailable" : "log.av1UnavailableSend"), "warn");
     }
   } else {
+    lastActualHint = "";
     setAv1Hint("", "");
     av1CanShare = true;
   }
@@ -1633,6 +1678,9 @@ function collectStats(peerId, conn, stats) {
 
   const impl = ROLE === "streamer" ? rtp.encoderImplementation : rtp.decoderImplementation;
   if (impl) d.impl = `${impl}${rtp.powerEfficientEncoder || rtp.powerEfficientDecoder ? t("diag.implPowerEfficient") : ""}`;
+  if (ROLE === "streamer" && impl && codec) {
+    noteActualEncoder(codec.mimeType, impl, rtp.powerEfficientEncoder);
+  }
 
   // Why the encoder is limiting quality. Streamer-only: the value says whether
   // the drop is CPU-bound or bandwidth-bound, which raw fps/bitrate cannot.
@@ -1967,6 +2015,7 @@ function stopSharing() {
   setField("dSignaling", t("signal.idle"));
   resetStatsFields();
   state("idle");
+  reportSupport(); // restore the pre-flight AV1 status after the stream ends
   log(t("log.sharingStopped"));
 }
 

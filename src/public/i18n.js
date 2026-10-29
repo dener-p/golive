@@ -203,6 +203,10 @@
       "support.av1ShareSwSlow": "sim (software, pode travar)",
       "support.av1ShareNo": "não (fallback)",
       "support.av1ShareUnknown": "sim (eficiência desconhecida)",
+      "support.av1ActualHw": "usando hardware · {impl}",
+      "support.av1ActualSw": "usando software · {impl}",
+      "support.av1ActualUnknown": "usando {impl}",
+      "support.av1ActualFallback": "usando {codec} (sem AV1)",
 
       // Signaling status values
       "signal.connecting": "conectando…",
@@ -512,6 +516,10 @@
       "support.av1ShareSwSlow": "yes (software, may lag)",
       "support.av1ShareNo": "no (fallback)",
       "support.av1ShareUnknown": "yes (efficiency unknown)",
+      "support.av1ActualHw": "using hardware · {impl}",
+      "support.av1ActualSw": "using software · {impl}",
+      "support.av1ActualUnknown": "using {impl}",
+      "support.av1ActualFallback": "using {codec} (no AV1)",
 
       "signal.connecting": "connecting…",
       "signal.connected": "connected",

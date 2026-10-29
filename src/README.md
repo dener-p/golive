@@ -138,7 +138,11 @@ Before starting, the streamer chooses:
   status from `mediaCapabilities.encodingInfo()` (hardware / software / may lag
   / unavailable) for the current preset. If the browser lists AV1 but cannot
   encode it, the checkbox is disabled instead of pretending it will be used.
-  The UI shows the codec that was *actually* negotiated after connecting.
+  After the stream starts, the same hint is replaced with the encoder Chrome
+  actually ran (`encoderImplementation`, e.g. `libaom` or `ExternalEncoder`);
+  Chrome's WebRTC AV1 path is libaom software encoding even when the GPU has an
+  AV1 encoder. The UI shows the codec that was *actually* negotiated after
+  connecting.
 - **ICE** uses STUN only (**no TURN**): Google's two servers plus Cloudflare's
   dual-stack one, and an `iceCandidatePoolSize` so candidates are ready before
   the first offer. The redundancy means one blocked STUN does not cost us
