@@ -397,18 +397,18 @@ async function probeAv1Encode(presetKey) {
 
 function av1ShareStatus(info) {
   if (!info || typeof info.supported !== "boolean") {
-    return { key: "support.av1ShareUnknown", cls: "warn", canShare: true };
+    return { key: "support.av1ShareUnknown", cls: "warn", canShare: true, software: false };
   }
   if (!info.supported) {
-    return { key: "support.av1ShareNo", cls: "bad", canShare: false };
+    return { key: "support.av1ShareNo", cls: "bad", canShare: false, software: false };
   }
   if (info.powerEfficient) {
-    return { key: "support.av1ShareHw", cls: "ok", canShare: true };
+    return { key: "support.av1ShareHw", cls: "ok", canShare: true, software: false };
   }
   if (info.smooth === false) {
-    return { key: "support.av1ShareSwSlow", cls: "warn", canShare: true };
+    return { key: "support.av1ShareSwSlow", cls: "warn", canShare: true, software: true };
   }
-  return { key: "support.av1ShareSw", cls: "warn", canShare: true };
+  return { key: "support.av1ShareSw", cls: "warn", canShare: true, software: true };
 }
 
 function renderSupport(send, recv, info) {
@@ -419,7 +419,7 @@ function renderSupport(send, recv, info) {
   if (isStreamer) {
     const status = send
       ? av1ShareStatus(info)
-      : { key: "support.av1ShareNo", cls: "bad", canShare: false };
+      : { key: "support.av1ShareNo", cls: "bad", canShare: false, software: false };
     const label = t(status.key);
     text += ` · ${t("support.av1Share")}: ${label}`;
     lastActualHint = "";
@@ -428,9 +428,17 @@ function renderSupport(send, recv, info) {
     relevant = send && status.canShare;
     const pref = $("preferAv1");
     if (pref) {
+      const saved = loadPrefs().preferAv1;
       pref.disabled = !av1CanShare || !!localStream;
-      if (!av1CanShare) pref.checked = false;
-      else if (!pref.disabled) pref.checked = loadPrefs().preferAv1 !== false;
+      if (!av1CanShare) {
+        pref.checked = false;
+      } else if (!pref.disabled) {
+        // Software AV1 is CPU-bound, so it starts unchecked unless the host
+        // explicitly opted in (or out) on a previous visit.
+        pref.checked = typeof saved === "boolean" ? saved : !status.software;
+      }
+      const wrap = pref.closest("label");
+      if (wrap) wrap.title = status.software ? t("support.av1CpuHint") : "";
     }
     if (!av1CanShare) {
       log(t(send ? "log.av1EncodeUnavailable" : "log.av1UnavailableSend"), "warn");
