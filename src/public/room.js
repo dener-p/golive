@@ -1910,6 +1910,7 @@ function applyStreamerUI() {
   setField("dQuality", presetLabel());
   updatePeerSelect();
   updateViewerCount();
+  checkAudioHint(); // the local preview is muted; hide any viewer unmute prompt
 }
 
 function applyViewerUI() {
@@ -2243,6 +2244,20 @@ function init() {
       syncVolumeUI();
     });
   }
+  // If the stream has audio and the viewer taps/clicks the muted player, turn
+  // sound on (a user gesture, so browsers allow it). Native controls may also
+  // produce a click; unmuting then is still the expected result.
+  $("video").addEventListener("click", () => {
+    if (ROLE !== "viewer") return;
+    const video = $("video");
+    const hasAudio = video.srcObject && video.srcObject.getAudioTracks().length > 0;
+    if (!video.muted || !hasAudio) return;
+    video.muted = false;
+    if (video.volume === 0) video.volume = 1;
+    syncVolumeUI();
+    checkAudioHint();
+  });
+
   const volSlider = $("volume");
   if (volSlider) {
     volSlider.addEventListener("input", () => {

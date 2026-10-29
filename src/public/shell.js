@@ -160,6 +160,17 @@ function addPanel({ room, role, pin, persist = true, w = 1 }) {
     const r = rec.room || rec.unit.room();
     if (r) window.open(`/watch/${r}`, "_blank", "noopener");
   });
+  if (els.copyLinkBtn) {
+    els.copyLinkBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(rec.unit.roomUrl());
+        showCopyFeedback(els.copyLinkBtn);
+      } catch {
+        appendLog(rec.room, t("log.clipboardUnavailable"), "warn");
+      }
+    });
+  }
   els.removeBtn.addEventListener("click", (e) => { e.stopPropagation(); removePanel(key); });
   if (els.qrBtn) els.qrBtn.addEventListener("click", () => openQr(rec.unit.roomUrl()));
   el.addEventListener("pointerdown", () => setActive(key));
@@ -197,6 +208,25 @@ function updateEmpty() {
   // A single room is shown compact and centered instead of stretching across
   // the whole window.
   if (grid) grid.classList.toggle("single", panels.size === 1);
+  // Removing the only room on a /watch/<id> link would leave a stream URL with
+  // no stream. Other pages keep the close button so a lone room can be removed.
+  const soleWatchPanel =
+    document.body.classList.contains("watch-page") && panels.size === 1;
+  for (const rec of panels.values()) {
+    if (rec.els.removeBtn) rec.els.removeBtn.hidden = soleWatchPanel;
+  }
+}
+
+// Brief "Copied!" feedback on an icon button, then restore its original label.
+function showCopyFeedback(btn) {
+  const label = btn.querySelector("span");
+  const old = label ? label.textContent : "";
+  btn.classList.add("copied");
+  if (label) label.textContent = t("app.copied");
+  setTimeout(() => {
+    btn.classList.remove("copied");
+    if (label) label.textContent = old;
+  }, 1500);
 }
 
 function setBadge(rec) {
@@ -242,8 +272,11 @@ function focusAudio(key) {
 }
 
 function updateAudioButtons() {
-  for (const [k, rec] of panels) {
-    if (rec.els.audioBtn) rec.els.audioBtn.classList.toggle("on", k === audioKey);
+  for (const [, rec] of panels) {
+    const video = rec.els.video;
+    // Follow the element, not just audioKey: the native controls can mute a
+    // panel without going through focusAudio().
+    if (rec.els.audioBtn) rec.els.audioBtn.classList.toggle("on", !!video && !video.muted);
   }
 }
 
@@ -429,16 +462,31 @@ function wireToolbar() {
 
 // ---------- Boot ----------
 
+// On a plain watch link the diagnostics and log are secondary: keep them
+// collapsed behind one header toggle instead of pushing the player up.
+function wireDetails() {
+  const btn = $("detailsBtn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const open = document.body.classList.toggle("show-details");
+    btn.setAttribute("aria-pressed", String(open));
+  });
+}
+
 function boot() {
   wireToolbar();
   wireQr();
   wireShortcuts();
+  wireDetails();
   updateLayoutButtons();
   updateEmpty();
 
   const path = location.pathname.toLowerCase();
   const watch = path.match(/^\/watch\/([a-z0-9][a-z0-9_-]{2,23})$/);
   if (watch) {
+    document.body.classList.add("watch-page");
+    const detailsBtn = $("detailsBtn");
+    if (detailsBtn) detailsBtn.hidden = false;
     addPanel({ room: watch[1], role: "viewer", persist: false });
   } else if (path === "/host") {
     addPanel({ room: null, role: "streamer", persist: false });
@@ -453,15 +501,26 @@ function boot() {
     for (const [, rec] of panels) rec.unit.destroy();
   });
 
-  // Keep the audio-button state in sync when the browser autoplays a panel.
-  document.addEventListener("play", (e) => {
+  // One room has sound at a time. The panel button, the native video controls,
+  // the volume slider and the keyboard mute shortcut all end up here, so a
+  // panel that becomes audible claims focus and the others are muted.
+  const claimAudio = (target) => {
+    if (!target) return;
     for (const [k, rec] of panels) {
-      if (rec.els.video === e.target && !e.target.muted) {
-        audioKey = k;
+      if (rec.els.video !== target) continue;
+      if (target.muted) {
+        // Muting the focused panel (native control or the M shortcut) clears
+        // the focus instead of leaving the speaker button falsely "on".
+        if (audioKey === k) audioKey = null;
         updateAudioButtons();
+      } else if (audioKey !== k) {
+        focusAudio(k);
       }
+      return;
     }
-  }, true);
+  };
+  document.addEventListener("play", (e) => claimAudio(e.target), true);
+  document.addEventListener("volumechange", (e) => claimAudio(e.target), true);
 }
 
 boot();
